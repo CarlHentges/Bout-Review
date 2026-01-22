@@ -1,0 +1,11 @@
+README.md
+pyproject.toml
+src/bout_review/__init__.py
+src/bout_review/__main__.py
+src/bout_review/app.py
+src/bout_review.egg-info/PKG-INFO
+src/bout_review.egg-info/SOURCES.txt
+src/bout_review.egg-info/dependency_links.txt
+src/bout_review.egg-info/entry_points.txt
+src/bout_review.egg-info/requires.txt
+src/bout_review.egg-info/top_level.txt

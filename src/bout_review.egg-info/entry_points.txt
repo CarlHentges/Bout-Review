@@ -1,0 +1,2 @@
+[console_scripts]
+bout-review = bout_review.app:main

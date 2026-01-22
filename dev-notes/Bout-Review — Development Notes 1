@@ -1,0 +1,217 @@
+# Bout-Review — Development Notes
+
+Date started: 2026-01-22  
+Repo: `Bout-Review`  
+Python package: `bout_review` (importable name; repo can keep hyphenated display name)
+
+---
+
+## 1. MVP scope (what we are building first)
+
+A minimal desktop application for personal fencing bout review:
+
+- Import one or more video files into a **project folder**
+- Mark “keep” segments to remove downtime (hotkeys)
+- Add **two** note types:
+  - `comment`: timestamped reference note about an action
+  - `chapter`: marker used to generate YouTube chapters (score, first half/second half)
+- Export:
+  - `exports/highlights.mp4` (stitched)
+  - `exports/clips/<label>.mp4` (single segment clip)
+  - `exports/youtube_chapters.txt` (paste into YouTube description)
+  - (optional) `exports/comments_timestamps.txt` or JSON for comments
+
+Non-goals for MVP:
+- No effects/transitions/color grading
+- No accounts/cloud sync
+- No ML/autodetection of touches/downtime
+
+---
+
+## 2. Workflow choice (minimal implementation)
+
+**No watch folder.** The app manages a project directory.
+
+1. New Project → choose/create project folder
+2. Import videos → app copies into `project/videos/`
+3. Review video → mark segments with `I`/`O`
+4. Add notes at playhead (`comment` / `chapter`)
+5. Export outputs to `project/exports/`
+
+Project folder layout:
+```
+MyProject/
+  project.json
+  videos/
+    bout_01.mp4
+    bout_02.mp4
+  exports/
+    highlights.mp4
+    youtube_chapters.txt
+    comments_timestamps.txt
+    clips/
+      E1.mp4
+      E2.mp4
+    logs/
+      ffmpeg_export.log
+
+```
+
+---
+
+## 3. Key requirements: YouTube chapters
+
+Exporter must output timestamp lines that satisfy:
+- first timestamp is `00:00`
+- at least 3 timestamps total
+- ascending order
+- each chapter ≥ 10 seconds
+
+Plan: generate chapters from `chapter` notes only (not from `comment` notes), with filtering/merging to enforce spacing.
+
+---
+
+## 4. Tech stack decisions
+
+- UI: PySide6 (Qt)
+- Processing: FFmpeg CLI
+- Metadata: ffprobe (via FFmpeg distribution)
+- Storage: `project.json`
+
+Repeatable local ffmpeg:
+- Use `imageio-ffmpeg` to obtain an ffmpeg executable path inside the environment.
+- Always call ffmpeg via that resolved path, not the system ffmpeg.
+
+Recommended Python:
+- Python 3.11 (safe baseline for PySide6 compatibility).
+
+---
+
+## 5. Repo structure (current plan)
+
+```
+Bout-Review/
+    pyproject.toml
+    README.md
+    .gitignore
+    src/
+        bout_review/
+        __init__.py
+        __main__.py
+        app.py
+        ui/
+        core/
+        ffmpeg/
+        utils/
+tests/
+scripts/
+````
+
+Module entrypoint:
+- `src/bout_review/__main__.py` calls `main()` from `app.py`
+- Supports `python -m bout_review`
+
+---
+
+## 6. Local setup & run commands
+
+From repo root:
+
+Create venv:
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+````
+
+Install deps:
+
+```bash
+pip install PySide6 imageio-ffmpeg
+```
+
+Editable install (recommended for development):
+
+```bash
+pip install -e .
+```
+
+Run:
+
+```bash
+python -m bout_review
+# or
+bout-review
+```
+
+If module import fails (src-layout):
+
+* `python -m bout_review` works after `pip install -e .`
+* Quick alternative without install:
+
+  * `PYTHONPATH=src python -m bout_review`
+
+Sanity checks:
+
+```bash
+which python
+python -V
+python -c "import bout_review; print(bout_review.__file__)"
+python -c "import imageio_ffmpeg as f; print(f.get_ffmpeg_exe())"
+```
+
+---
+
+## 7. Video handling decisions (rotation + mixed sources)
+
+Rotation:
+
+* Store `rotation_probe` from ffprobe.
+* Allow a per-media `rotation_override` (0/90/180/270/Auto).
+* Export uses effective rotation = override if set, else probe value.
+
+Mixed sources / resolution:
+
+* Default export is “re-encode to a consistent preset” to avoid concat incompatibilities.
+* Normalize all segments to a single resolution (e.g., 1920x1080) with aspect-preserving scale + pad.
+* This guarantees consistent stream params for the stitched output.
+
+---
+
+## 8. Current bootstrap status
+
+* Repo cloned locally (initially empty).
+* Created minimal src-layout package.
+* Established that `python -m bout_review` requires either:
+
+  * editable install (`pip install -e .`), or
+  * `PYTHONPATH=src`.
+
+---
+
+## 9. Next milestones
+
+1. Project I/O
+
+   * create/open project folder
+   * read/write `project.json` safely (atomic write)
+2. Import videos
+
+   * copy into `videos/`
+   * ffprobe metadata ingest (duration, rotation)
+3. Playback UI + hotkeys
+
+   * load video
+   * implement segment mark in/out + segment list
+4. Notes UI
+
+   * add `comment` and `chapter` at playhead
+5. Export pipeline
+
+   * per-segment render with rotation + normalize resolution
+   * stitch to `highlights.mp4`
+   * export clips
+6. Text exporters
+
+   * `youtube_chapters.txt` from chapter notes (with validation rules)
+   * `comments_timestamps.txt` (or JSON) from comment notes
