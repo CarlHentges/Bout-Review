@@ -215,3 +215,18 @@ Mixed sources / resolution:
 
    * `youtube_chapters.txt` from chapter notes (with validation rules)
    * `comments_timestamps.txt` (or JSON) from comment notes
+
+---
+
+## 2026-01-22 MVP bootstrap update
+
+- Implemented core data models (`MediaItem`, `Segment`, `Note`, `Project`) plus atomic `project.json` read/write helpers.
+- Added ffmpeg plumbing: resolve bundled ffmpeg/ffprobe via `imageio_ffmpeg`, metadata probing (duration + rotation), export pipeline with normalization to 1920x1080, per-segment clip renders, concat to `exports/highlights.mp4`, and text exporters for YouTube chapters + comment timestamps.
+- Created PySide6 desktop shell (`MainWindow`): new/open project, import videos (copies into `project/videos/` with probe), playback with slider, hotkeys (`I`/`O` for mark in/out, `Ctrl+Shift+C`/`Ctrl+Shift+H` for notes), lists for videos/segments/notes, and one-click export.
+- Validation rules enforced during export: first chapter at 00:00 is auto-inserted, min 3 chapters, >=10s spacing between chapters and before video end, and segment duration must be positive.
+- Known gaps / follow-ups: UI polish (play controls, delete/edit items, rotation override), better error surfacing for missing ffprobe binaries, headless-safe launch, unit tests, and README refresh with the new workflow.
+
+Quick run (from repo):
+```bash
+python -m bout_review
+```
