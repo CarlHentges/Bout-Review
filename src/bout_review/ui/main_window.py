@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QDesktopServices, QIcon
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QStatusBar,
     QToolBar,
     QVBoxLayout,
@@ -35,7 +36,7 @@ from .timeline_slider import NoteMarker, SegmentMarker, TimelineSlider
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Bout-Review")
+        self.setWindowTitle("Bout Review")
         self.resize(1100, 720)
 
         self.config = load_config()
@@ -64,7 +65,9 @@ class MainWindow(QMainWindow):
         self.position_label = QLabel("00:00 / 00:00")
         self.instructions_label = QLabel()
         self.instructions_label.setWordWrap(True)
-        self.instructions_label.setStyleSheet("color: #2c3e50; background-color: #f8f9fa; padding: 8px;")
+        self.instructions_label.setStyleSheet("padding: 8px;")
+        self.instructions_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        self.video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         self.video_list = QListWidget()
         self.video_list.setDragEnabled(True)
@@ -96,6 +99,7 @@ class MainWindow(QMainWindow):
         self._apply_timeline_config()
         self._sync_hotkey_labels()
         self._sync_mute_action_text()
+        self._apply_window_icon()
 
     # UI setup -----------------------------------------------------------------
     def _build_ui(self) -> None:
@@ -118,10 +122,10 @@ class MainWindow(QMainWindow):
         left_layout.addLayout(note_buttons)
 
         right_layout = QVBoxLayout()
-        right_layout.addWidget(self.video_widget)
-        right_layout.addWidget(self.position_slider)
-        right_layout.addWidget(self.position_label)
-        right_layout.addWidget(self.instructions_label)
+        right_layout.addWidget(self.video_widget, 6)
+        right_layout.addWidget(self.position_slider, 0)
+        right_layout.addWidget(self.position_label, 0)
+        right_layout.addWidget(self.instructions_label, 1)
 
         main_layout = QHBoxLayout()
         main_layout.addLayout(left_layout, 1)
@@ -140,6 +144,7 @@ class MainWindow(QMainWindow):
         open_action = QAction("Open Project", self, triggered=self._open_project)
         import_action = QAction("Import Videos", self, triggered=self._import_videos)
         export_action = QAction("Export", self, triggered=self._export)
+        open_exports_action = QAction("Open Exports Folder", self, triggered=self._open_exports_folder)
         play_action = QAction("Play/Pause", self, triggered=self._toggle_play)
         self.mute_action = QAction("Mute Audio", self, checkable=True, triggered=self._toggle_mute)
         self.mute_action.setChecked(self.audio.isMuted())
@@ -161,6 +166,7 @@ class MainWindow(QMainWindow):
             "open_project": open_action,
             "import_videos": import_action,
             "export": export_action,
+            "open_exports": open_exports_action,
             "play_pause": play_action,
             "mute_audio": self.mute_action,
             "mark_in": mark_in_action,
@@ -189,6 +195,7 @@ class MainWindow(QMainWindow):
             open_action,
             import_action,
             export_action,
+            open_exports_action,
             play_action,
             self.mute_action,
             mark_in_action,
@@ -665,6 +672,7 @@ class MainWindow(QMainWindow):
             f"- Mark In/Out: {key('mark_in', 'I')} / {key('mark_out', 'O')}",
             f"- Add Comment/Chapter: {key('add_comment', 'Ctrl+Shift+C')} / {key('add_chapter', 'Ctrl+Shift+H')}",
             "- Double-click a segment to jump to its start; use Edit/Delete buttons for segments and notes.",
+            "- Use 'Open Exports Folder' in the toolbar to open rendered clips.",
             f"- Export: {key('export', 'Ctrl+E')}",
         ]
         return "\n".join(lines)
@@ -681,6 +689,7 @@ class MainWindow(QMainWindow):
             "open_project": "Open an existing project",
             "import_videos": "Import video files into the project",
             "export": "Export highlights and text files",
+            "open_exports": "Open the project exports folder",
             "play_pause": "Play or pause the current video",
             "mute_audio": "Toggle audio mute",
             "mark_in": "Set segment start (Mark In)",
@@ -721,6 +730,18 @@ class MainWindow(QMainWindow):
         else:
             self.mark_in_indicator.setText("Mark In: OFF")
             self.mark_in_indicator.setStyleSheet("color: #2c3e50; background-color: #ecf0f1; padding: 4px;")
+
+    def _apply_window_icon(self) -> None:
+        icon_path = Path(__file__).resolve().parents[1] / "assets" / "bout_review_icon.png"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
+
+    def _open_exports_folder(self) -> None:
+        if not self.project:
+            QMessageBox.information(self, "No project", "Create or open a project first.")
+            return
+        self.project.exports_dir.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.project.exports_dir)))
 
     def _update_timeline_markers(self) -> None:
         if not self.project or not self.current_media_id:

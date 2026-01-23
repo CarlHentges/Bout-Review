@@ -77,6 +77,14 @@ def _safe_label(label: str, fallback: str) -> str:
     return candidate
 
 
+def _ordered_segments(project: Project) -> List[Segment]:
+    order = {m.id: idx for idx, m in enumerate(project.medias)}
+    return sorted(
+        project.segments,
+        key=lambda s: (order.get(s.media_id, 10**9), s.start, s.end),
+    )
+
+
 def _map_to_highlight(note: Note, timeline: List[Tuple[Segment, float, float]]) -> float | None:
     for seg, start_out, end_out in timeline:
         if seg.media_id != note.media_id:
@@ -209,7 +217,8 @@ def _comment_lines(project: Project, timeline: List[Tuple[Segment, float, float]
 
 
 def export_project(project: Project) -> ExportResult:
-    if not project.segments:
+    ordered_segments = _ordered_segments(project)
+    if not ordered_segments:
         raise ValueError("No segments to export. Mark keep ranges before exporting.")
     media_lookup: Dict[str, str] = {m.id: m.filename for m in project.medias}
     rotation_lookup: Dict[str, int] = {
@@ -224,7 +233,7 @@ def export_project(project: Project) -> ExportResult:
     log_path = project.logs_dir / "ffmpeg_export.log"
 
     clip_paths: List[Path] = []
-    for idx, segment in enumerate(project.segments, start=1):
+    for idx, segment in enumerate(ordered_segments, start=1):
         if segment.end <= segment.start:
             raise ValueError(f"Segment {segment.id} has non-positive duration.")
         filename = media_lookup.get(segment.media_id)
@@ -250,7 +259,7 @@ def export_project(project: Project) -> ExportResult:
     highlights_path = project.exports_dir / "highlights.mp4"
     _concat_highlight(ffmpeg, clip_paths, highlights_path, log_path)
 
-    timeline = build_timeline(project.segments)
+    timeline = build_timeline(ordered_segments)
     total_duration = timeline[-1][2] if timeline else 0.0
 
     chapters_path = project.exports_dir / "youtube_chapters.txt"

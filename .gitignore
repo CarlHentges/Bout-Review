@@ -4,3 +4,4 @@ __pycache__/
 .DS_Store
 exports/
 my-test-project/
+bout_review_config.json
