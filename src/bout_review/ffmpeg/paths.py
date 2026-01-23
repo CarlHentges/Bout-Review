@@ -5,8 +5,50 @@ from pathlib import Path
 import shutil
 import sys
 import imageio_ffmpeg
+import subprocess
 
 from ..utils.debug import debug_print
+from ..utils.config import config_path
+
+
+def _user_bin_dir() -> Path:
+    return config_path().parent / "bin"
+
+
+def _is_in_app_bundle(path: Path) -> bool:
+    parts = path.parts
+    return "Contents" in parts and "Applications" in parts
+
+
+def _ensure_executable_copy(src: Path, name: str) -> Path:
+    if not src.exists():
+        raise FileNotFoundError(src)
+    dest_dir = _user_bin_dir()
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / name
+    try:
+        if not dest.exists() or src.stat().st_mtime > dest.stat().st_mtime:
+            shutil.copy2(src, dest)
+        dest.chmod(0o755)
+        if sys.platform == "darwin":
+            subprocess.run(
+                ["xattr", "-dr", "com.apple.quarantine", str(dest)],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        return dest
+    except OSError as exc:
+        debug_print(f"Failed to copy bundled binary to user bin: {exc}")
+        raise
+
+
+def _should_copy(candidate: Path) -> bool:
+    if sys.platform == "darwin" and "AppTranslocation" in str(candidate):
+        return True
+    if _is_in_app_bundle(candidate):
+        return True
+    return not os.access(candidate, os.X_OK)
 
 
 def _bundled_binary(name: str) -> Path | None:
@@ -19,8 +61,19 @@ def _bundled_binary(name: str) -> Path | None:
         candidates.append(exe_dir / name)
         # macOS .app layout: Contents/MacOS (exe) and Contents/Resources (data)
         candidates.append(exe_dir.parent / "Resources" / name)
+        candidates.append(exe_dir.parent / "Frameworks" / name)
         for candidate in candidates:
             if candidate.exists():
+                if _should_copy(candidate):
+                    try:
+                        copied = _ensure_executable_copy(candidate, name)
+                        debug_print(f"Using copied bundled binary for {name}: {copied}")
+                        return copied
+                    except OSError:
+                        debug_print(
+                            f"Bundled binary not usable and copy failed for {name}: {candidate}"
+                        )
+                        return None
                 debug_print(f"Resolved bundled binary for {name}: {candidate}")
                 return candidate
     return None
@@ -31,6 +84,9 @@ def get_ffmpeg_path() -> Path:
     if bundled:
         return bundled
     path = Path(imageio_ffmpeg.get_ffmpeg_exe())
+    if getattr(sys, "frozen", False) and _should_copy(path):
+        copied = _ensure_executable_copy(path, "ffmpeg")
+        return copied
     debug_print(f"Resolved ffmpeg path: {path}")
     return path
 
