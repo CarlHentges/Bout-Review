@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any, Dict
 
@@ -56,17 +57,31 @@ def _deep_merge(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any
     return merged
 
 
+def _default_config_dir() -> Path:
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Bout Review"
+    if os.name == "nt":
+        appdata = os.getenv("APPDATA") or (Path.home() / "AppData" / "Roaming")
+        return Path(appdata) / "Bout Review"
+    xdg = os.getenv("XDG_CONFIG_HOME") or (Path.home() / ".config")
+    return Path(xdg) / "bout-review"
+
+
 def config_path() -> Path:
     override = os.getenv("BOUT_REVIEW_CONFIG")
     if override:
         return Path(override)
-    return Path.cwd() / "bout_review_config.json"
+    return _default_config_dir() / "bout_review_config.json"
 
 
 def load_config() -> Dict[str, Any]:
     path = config_path()
     if not path.exists():
-        path.write_text(json.dumps(DEFAULT_CONFIG, indent=2) + "\n", encoding="utf-8")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(DEFAULT_CONFIG, indent=2) + "\n", encoding="utf-8")
+        except OSError:
+            return dict(DEFAULT_CONFIG)
         return dict(DEFAULT_CONFIG)
 
     try:
@@ -78,5 +93,9 @@ def load_config() -> Dict[str, Any]:
         return dict(DEFAULT_CONFIG)
     merged = _deep_merge(DEFAULT_CONFIG, data)
     if merged != data:
-        path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+        except OSError:
+            pass
     return merged
