@@ -5,3 +5,5 @@ __pycache__/
 exports/
 my-test-project/
 bout_review_config.json
+build/
+dist/

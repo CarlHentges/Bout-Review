@@ -18,6 +18,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "open_project": "Ctrl+O",
         "import_videos": "Ctrl+I",
         "export": "Ctrl+E",
+        "open_exports": "Ctrl+Shift+E",
         "play_pause": "Space",
         "mute_audio": "M",
         "mark_in": "I",

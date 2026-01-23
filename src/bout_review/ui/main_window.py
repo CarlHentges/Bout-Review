@@ -222,6 +222,15 @@ class MainWindow(QMainWindow):
         if not directory:
             return
         base_path = Path(directory)
+        if base_path.exists() and any(base_path.iterdir()):
+            confirm = QMessageBox.question(
+                self,
+                "Folder not empty",
+                f"'{base_path.name}' is not empty. Create project here anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if confirm != QMessageBox.Yes:
+                return
         try:
             self.project = create_project(base_path)
         except Exception as exc:
@@ -464,11 +473,6 @@ class MainWindow(QMainWindow):
         if not segment or not self.project:
             QMessageBox.information(self, "No segment", "Select a segment to delete.")
             return
-        confirm = QMessageBox.question(
-            self, "Delete segment", "Delete the selected segment?", QMessageBox.Yes | QMessageBox.No
-        )
-        if confirm != QMessageBox.Yes:
-            return
         self.project.segments = [s for s in self.project.segments if s.id != segment.id]
         save_project(self.project)
         self._refresh_segments()
@@ -542,11 +546,6 @@ class MainWindow(QMainWindow):
         note = self._selected_note()
         if not note or not self.project:
             QMessageBox.information(self, "No note", "Select a note to delete.")
-            return
-        confirm = QMessageBox.question(
-            self, "Delete note", "Delete the selected note?", QMessageBox.Yes | QMessageBox.No
-        )
-        if confirm != QMessageBox.Yes:
             return
         self.project.notes = [n for n in self.project.notes if n.id != note.id]
         save_project(self.project)
@@ -672,7 +671,7 @@ class MainWindow(QMainWindow):
             f"- Mark In/Out: {key('mark_in', 'I')} / {key('mark_out', 'O')}",
             f"- Add Comment/Chapter: {key('add_comment', 'Ctrl+Shift+C')} / {key('add_chapter', 'Ctrl+Shift+H')}",
             "- Double-click a segment to jump to its start; use Edit/Delete buttons for segments and notes.",
-            "- Use 'Open Exports Folder' in the toolbar to open rendered clips.",
+            f"- Open exports folder: {key('open_exports', 'Ctrl+Shift+E')}",
             f"- Export: {key('export', 'Ctrl+E')}",
         ]
         return "\n".join(lines)

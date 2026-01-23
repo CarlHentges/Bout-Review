@@ -70,7 +70,7 @@ class TimelineSlider(QSlider):
         super().paintEvent(event)
         if self._duration_seconds <= 0:
             return
-        if not (self._segments or self._chapters or self._comments):
+        if not (self._segments or self._chapters or self._comments or self._active_segment):
             return
 
         opt = QStyleOptionSlider()
@@ -100,11 +100,14 @@ class TimelineSlider(QSlider):
         if self._active_segment:
             active_start, active_end = self._active_segment
             active_color = QColor(self._colors.get("segment_active", "#f1c40f"))
-            active_color.setAlpha(170)
+            active_color.setAlpha(200)
             x1 = x_from_time(max(0.0, min(active_start, active_end)))
             x2 = x_from_time(max(active_start, active_end))
-            width = max(1, x2 - x1)
-            painter.fillRect(QRect(x1, seg_y, width, seg_height), active_color)
+            width = x2 - x1
+            if width < 4:
+                x1 = max(groove.x(), x1 - 2)
+                width = 4
+            painter.fillRect(QRect(x1, seg_y - 1, width, seg_height + 2), active_color)
 
         # Chapter markers
         chapter_color = QColor(self._colors.get("chapter", "#3498db"))
