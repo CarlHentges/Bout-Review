@@ -15,6 +15,7 @@ from ..utils.debug import debug_print
 class MediaMetadata:
     duration: float
     rotation: int
+    fps: float | None = None
 
 
 def _run_ffprobe(path: Path) -> dict:
@@ -57,6 +58,25 @@ def _parse_duration_from_text(text: str) -> float | None:
     return hours * 3600 + minutes * 60 + seconds
 
 
+def _parse_frame_rate(value: str | None) -> float | None:
+    if not value:
+        return None
+    if "/" in value:
+        try:
+            num, den = value.split("/", 1)
+            num_f = float(num)
+            den_f = float(den)
+            if den_f == 0:
+                return None
+            return num_f / den_f
+        except ValueError:
+            return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
 def _normalize_rotation(value: float) -> int:
     rounded = int(round(value / 90.0) * 90)
     return rounded % 360
@@ -79,6 +99,16 @@ def _parse_rotation_from_text(text: str) -> int:
     return 0
 
 
+def _parse_fps_from_text(text: str) -> float | None:
+    match = re.search(r",\s*([\d.]+)\s*fps", text)
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
 def _run_ffmpeg_probe(path: Path) -> MediaMetadata:
     ffmpeg = get_ffmpeg_path()
     cmd = [str(ffmpeg), "-hide_banner", "-i", str(path)]
@@ -90,10 +120,11 @@ def _run_ffmpeg_probe(path: Path) -> MediaMetadata:
         debug_print(f"ffmpeg stderr preview:\n{preview}")
     duration = _parse_duration_from_text(stderr)
     rotation = _parse_rotation_from_text(stderr)
+    fps = _parse_fps_from_text(stderr)
     if duration is None:
         raise RuntimeError("Could not parse duration from ffmpeg output.")
     debug_print(f"ffmpeg fallback duration: {duration:.3f}s rotation: {rotation}")
-    return MediaMetadata(duration=duration, rotation=rotation)
+    return MediaMetadata(duration=duration, rotation=rotation, fps=fps)
 
 
 def _extract_rotation(stream: dict) -> int:
@@ -132,4 +163,9 @@ def probe_media(path: Path) -> MediaMetadata:
             video_stream = stream
             break
     rotation = _extract_rotation(video_stream) if video_stream else 0
-    return MediaMetadata(duration=duration, rotation=rotation)
+    fps = None
+    if video_stream:
+        fps = _parse_frame_rate(video_stream.get("avg_frame_rate"))
+        if fps is None:
+            fps = _parse_frame_rate(video_stream.get("r_frame_rate"))
+    return MediaMetadata(duration=duration, rotation=rotation, fps=fps)

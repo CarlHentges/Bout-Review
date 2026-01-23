@@ -7,6 +7,7 @@ from PySide6.QtGui import QAction
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
@@ -16,7 +17,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QSlider,
     QStatusBar,
     QToolBar,
     QVBoxLayout,
@@ -27,7 +27,9 @@ from ..core.importer import import_media_files
 from ..core.models import Note, Project, Segment, generate_id
 from ..core.project_io import create_project, load_project, save_project
 from ..ffmpeg.exporter import build_timeline, chapter_lines_with_warnings, export_project
+from ..utils.config import load_config
 from ..utils.timecode import to_timestamp
+from .timeline_slider import NoteMarker, SegmentMarker, TimelineSlider
 
 
 class MainWindow(QMainWindow):
@@ -36,28 +38,48 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Bout-Review")
         self.resize(1100, 720)
 
+        self.config = load_config()
+        self.hotkeys = self.config.get("hotkeys", {})
+        self.colors = self.config.get("colors", {})
+        self.timeline_config = self.config.get("timeline", {})
+        self.audio_config = self.config.get("audio", {})
+        self.scrub_config = self.config.get("scrub", {})
+
         self.project: Project | None = None
         self.current_media_id: str | None = None
         self.mark_in_time: float | None = None
 
         self.player = QMediaPlayer(self)
         self.audio = QAudioOutput(self)
-        self.audio.setMuted(True)
+        self.audio.setMuted(bool(self.audio_config.get("default_muted", True)))
+        self.audio.setVolume(float(self.audio_config.get("volume", 0.8)))
         self.player.setAudioOutput(self.audio)
         self.video_widget = QVideoWidget(self)
         self.player.setVideoOutput(self.video_widget)
+        self._scrub_restore_muted = self.audio.isMuted()
+        self._scrub_restore_play = False
 
-        self.position_slider = QSlider(Qt.Horizontal)
+        self.position_slider = TimelineSlider(Qt.Horizontal)
         self.position_slider.setEnabled(False)
         self.position_label = QLabel("00:00 / 00:00")
+        self.instructions_label = QLabel()
+        self.instructions_label.setWordWrap(True)
+        self.instructions_label.setStyleSheet("color: #2c3e50; background-color: #f8f9fa; padding: 8px;")
 
         self.video_list = QListWidget()
+        self.video_list.setDragEnabled(True)
+        self.video_list.setAcceptDrops(True)
+        self.video_list.setDragDropMode(QAbstractItemView.InternalMove)
+        self.video_list.setDefaultDropAction(Qt.MoveAction)
+        self.video_list.setSelectionMode(QAbstractItemView.SingleSelection)
         self.segment_list = QListWidget()
         self.notes_list = QListWidget()
         self.import_button = QPushButton("Import videos")
         self.import_button.clicked.connect(self._import_videos)
         self.import_button.setEnabled(False)
         self.segment_label = QLabel("Segments (I = Mark In, O = Mark Out)")
+        self.mark_in_indicator = QLabel("Mark In: OFF")
+        self._set_mark_indicator(False)
         self.segment_edit_button = QPushButton("Edit segment")
         self.segment_delete_button = QPushButton("Delete segment")
         self.segment_edit_button.clicked.connect(self._edit_segment)
@@ -71,6 +93,9 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._build_actions()
         self._connect_signals()
+        self._apply_timeline_config()
+        self._sync_hotkey_labels()
+        self._sync_mute_action_text()
 
     # UI setup -----------------------------------------------------------------
     def _build_ui(self) -> None:
@@ -79,6 +104,7 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.video_list)
         left_layout.addWidget(self.import_button)
         left_layout.addWidget(self.segment_label)
+        left_layout.addWidget(self.mark_in_indicator)
         left_layout.addWidget(self.segment_list)
         segment_buttons = QHBoxLayout()
         segment_buttons.addWidget(self.segment_edit_button)
@@ -95,6 +121,7 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.video_widget)
         right_layout.addWidget(self.position_slider)
         right_layout.addWidget(self.position_label)
+        right_layout.addWidget(self.instructions_label)
 
         main_layout = QHBoxLayout()
         main_layout.addLayout(left_layout, 1)
@@ -109,17 +136,53 @@ class MainWindow(QMainWindow):
         toolbar = QToolBar("Main")
         self.addToolBar(toolbar)
 
-        new_action = QAction("New Project", self, triggered=self._new_project, shortcut="Ctrl+N")
-        open_action = QAction("Open Project", self, triggered=self._open_project, shortcut="Ctrl+O")
-        import_action = QAction("Import Videos", self, triggered=self._import_videos, shortcut="Ctrl+I")
-        export_action = QAction("Export", self, triggered=self._export, shortcut="Ctrl+E")
-        play_action = QAction("Play/Pause", self, triggered=self._toggle_play, shortcut="Space")
+        new_action = QAction("New Project", self, triggered=self._new_project)
+        open_action = QAction("Open Project", self, triggered=self._open_project)
+        import_action = QAction("Import Videos", self, triggered=self._import_videos)
+        export_action = QAction("Export", self, triggered=self._export)
+        play_action = QAction("Play/Pause", self, triggered=self._toggle_play)
         self.mute_action = QAction("Mute Audio", self, checkable=True, triggered=self._toggle_mute)
-        self.mute_action.setChecked(True)
-        mark_in_action = QAction("Mark In", self, triggered=self._mark_in, shortcut="I")
-        mark_out_action = QAction("Mark Out", self, triggered=self._mark_out, shortcut="O")
-        comment_action = QAction("Add Comment", self, triggered=lambda: self._add_note("comment"), shortcut="Ctrl+Shift+C")
-        chapter_action = QAction("Add Chapter", self, triggered=lambda: self._add_note("chapter"), shortcut="Ctrl+Shift+H")
+        self.mute_action.setChecked(self.audio.isMuted())
+        mark_in_action = QAction("Mark In", self, triggered=self._mark_in)
+        mark_out_action = QAction("Mark Out", self, triggered=self._mark_out)
+        comment_action = QAction("Add Comment", self, triggered=lambda: self._add_note("comment"))
+        chapter_action = QAction("Add Chapter", self, triggered=lambda: self._add_note("chapter"))
+        scrub_back_action = QAction("Scrub Back", self, triggered=lambda: self._scrub_seconds(-1))
+        scrub_forward_action = QAction("Scrub Forward", self, triggered=lambda: self._scrub_seconds(1))
+        scrub_frame_back_action = QAction(
+            "Step Frame Back", self, triggered=lambda: self._scrub_frames(-1)
+        )
+        scrub_frame_forward_action = QAction(
+            "Step Frame Forward", self, triggered=lambda: self._scrub_frames(1)
+        )
+
+        action_map = {
+            "new_project": new_action,
+            "open_project": open_action,
+            "import_videos": import_action,
+            "export": export_action,
+            "play_pause": play_action,
+            "mute_audio": self.mute_action,
+            "mark_in": mark_in_action,
+            "mark_out": mark_out_action,
+            "add_comment": comment_action,
+            "add_chapter": chapter_action,
+            "scrub_back": scrub_back_action,
+            "scrub_forward": scrub_forward_action,
+            "scrub_frame_back": scrub_frame_back_action,
+            "scrub_frame_forward": scrub_frame_forward_action,
+        }
+        self._apply_hotkeys(action_map)
+        self._apply_tooltips(action_map)
+
+        for action in [
+            scrub_back_action,
+            scrub_forward_action,
+            scrub_frame_back_action,
+            scrub_frame_forward_action,
+        ]:
+            action.setShortcutContext(Qt.WindowShortcut)
+            self.addAction(action)
 
         for action in [
             new_action,
@@ -137,11 +200,14 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         self.video_list.itemSelectionChanged.connect(self._on_video_selected)
+        self.video_list.model().rowsMoved.connect(self._on_video_reordered)
         self.segment_list.itemDoubleClicked.connect(self._jump_to_segment)
         self.notes_list.itemDoubleClicked.connect(self._edit_note)
         self.player.positionChanged.connect(self._on_position_changed)
         self.player.durationChanged.connect(self._on_duration_changed)
         self.position_slider.sliderMoved.connect(self._on_slider_moved)
+        self.position_slider.sliderPressed.connect(self._on_slider_pressed)
+        self.position_slider.sliderReleased.connect(self._on_slider_released)
 
     # Project lifecycle --------------------------------------------------------
     def _new_project(self) -> None:
@@ -174,6 +240,7 @@ class MainWindow(QMainWindow):
         self.import_button.setEnabled(True)
         self.current_media_id = None
         self.mark_in_time = None
+        self._set_mark_indicator(False)
         self._refresh_video_list()
         self._refresh_segments()
         self._refresh_notes()
@@ -220,9 +287,12 @@ class MainWindow(QMainWindow):
             return
         path = self.project.videos_dir / media.filename
         self.current_media_id = media_id
+        self.mark_in_time = None
+        self._set_mark_indicator(False)
         self.player.setSource(QUrl.fromLocalFile(str(path)))
         self.player.play()
         self.statusBar().showMessage(f"Loaded {media.filename}", 3000)
+        self._update_timeline_markers()
 
     def _toggle_play(self) -> None:
         if self.player.mediaStatus() == QMediaPlayer.NoMedia:
@@ -234,6 +304,7 @@ class MainWindow(QMainWindow):
 
     def _toggle_mute(self, checked: bool) -> None:
         self.audio.setMuted(checked)
+        self._sync_mute_action_text()
         status = "Audio muted" if checked else "Audio unmuted"
         self.statusBar().showMessage(status, 2000)
 
@@ -245,13 +316,31 @@ class MainWindow(QMainWindow):
         current_s = pos_ms / 1000 if pos_ms else 0
         total_s = total / 1000 if total else 0
         self.position_label.setText(f"{to_timestamp(current_s)} / {to_timestamp(total_s)}")
+        if self.mark_in_time is not None:
+            self._update_timeline_markers()
 
     def _on_duration_changed(self, duration_ms: int) -> None:
         self.position_slider.setEnabled(True)
         self.position_slider.setRange(0, duration_ms)
+        self.position_slider.set_duration_seconds(duration_ms / 1000 if duration_ms else 0.0)
+        self._update_timeline_markers()
 
     def _on_slider_moved(self, value: int) -> None:
         self.player.setPosition(value)
+        if self.mark_in_time is not None:
+            self._update_timeline_markers()
+
+    def _on_slider_pressed(self) -> None:
+        self._scrub_restore_muted = self.audio.isMuted()
+        self.audio.setMuted(True)
+        self._scrub_restore_play = self.player.playbackState() == QMediaPlayer.PlayingState
+        if self._scrub_restore_play:
+            self.player.pause()
+
+    def _on_slider_released(self) -> None:
+        self.audio.setMuted(self._scrub_restore_muted)
+        if self._scrub_restore_play:
+            self.player.play()
 
     # Segments -----------------------------------------------------------------
     def _current_time_seconds(self) -> float:
@@ -270,6 +359,8 @@ class MainWindow(QMainWindow):
         if not self._require_media():
             return
         self.mark_in_time = self._current_time_seconds()
+        self._set_mark_indicator(True)
+        self._update_timeline_markers()
         self.statusBar().showMessage(f"Marked in at {self.mark_in_time:.2f}s", 2000)
 
     def _mark_out(self) -> None:
@@ -293,7 +384,9 @@ class MainWindow(QMainWindow):
         self.project.segments.append(segment)
         save_project(self.project)
         self.mark_in_time = None
+        self._set_mark_indicator(False)
         self._refresh_segments()
+        self._update_timeline_markers()
         self.statusBar().showMessage(f"Segment {label} saved", 2000)
 
     def _selected_segment(self) -> Segment | None:
@@ -306,7 +399,11 @@ class MainWindow(QMainWindow):
         return next((s for s in self.project.segments if s.id == seg_id), None)
 
     def _seek_to(self, seconds: float) -> None:
-        self.player.setPosition(int(seconds * 1000))
+        duration_ms = self.player.duration()
+        target_ms = int(max(0.0, seconds) * 1000)
+        if duration_ms:
+            target_ms = min(target_ms, duration_ms)
+        self.player.setPosition(target_ms)
 
     def _jump_to_segment(self, item: QListWidgetItem) -> None:
         if not self.project:
@@ -374,12 +471,14 @@ class MainWindow(QMainWindow):
         self.segment_list.clear()
         if not self.project:
             return
-        for segment in self.project.segments:
+        segments = sorted(self.project.segments, key=lambda s: s.start)
+        for segment in segments:
             start = to_timestamp(segment.start)
             end = to_timestamp(segment.end)
             item = QListWidgetItem(f"{segment.label or segment.id[:5]}  {start} - {end}")
             item.setData(Qt.UserRole, segment.id)
             self.segment_list.addItem(item)
+        self._update_timeline_markers()
 
     # Notes --------------------------------------------------------------------
     def _add_note(self, note_type: str) -> None:
@@ -400,6 +499,7 @@ class MainWindow(QMainWindow):
         self.project.notes.append(note)
         save_project(self.project)
         self._refresh_notes()
+        self._update_timeline_markers()
         self.statusBar().showMessage(f"{note_type.capitalize()} added", 1500)
 
     def _selected_note(self) -> Note | None:
@@ -428,6 +528,7 @@ class MainWindow(QMainWindow):
         note.text = text.strip()
         save_project(self.project)
         self._refresh_notes()
+        self._update_timeline_markers()
         self.statusBar().showMessage("Note updated", 1500)
 
     def _delete_note(self) -> None:
@@ -443,13 +544,15 @@ class MainWindow(QMainWindow):
         self.project.notes = [n for n in self.project.notes if n.id != note.id]
         save_project(self.project)
         self._refresh_notes()
+        self._update_timeline_markers()
         self.statusBar().showMessage("Note deleted", 1500)
 
     def _refresh_notes(self) -> None:
         self.notes_list.clear()
         if not self.project:
             return
-        for note in self.project.notes:
+        notes = sorted(self.project.notes, key=lambda n: n.timestamp)
+        for note in notes:
             ts = to_timestamp(note.timestamp)
             item = QListWidgetItem(f"{note.type:8} {ts}  {note.text}")
             item.setData(Qt.UserRole, note.id)
@@ -496,8 +599,8 @@ class MainWindow(QMainWindow):
         self.video_list.clear()
         if not self.project:
             return
-        for media in self.project.medias:
-            item = QListWidgetItem(media.filename)
+        for idx, media in enumerate(self.project.medias, start=1):
+            item = QListWidgetItem(f"{idx}. {media.filename}")
             item.setData(Qt.UserRole, media.id)
             self.video_list.addItem(item)
         if self.video_list.count() == 0:
@@ -509,3 +612,142 @@ class MainWindow(QMainWindow):
                     break
         else:
             self.video_list.setCurrentRow(0)
+
+    def _on_video_reordered(self, *args) -> None:
+        if not self.project:
+            return
+        order_ids = [self.video_list.item(i).data(Qt.UserRole) for i in range(self.video_list.count())]
+        media_lookup = {m.id: m for m in self.project.medias}
+        self.project.medias = [media_lookup[mid] for mid in order_ids if mid in media_lookup]
+        save_project(self.project)
+        self._refresh_video_list()
+
+    def _scrub_seconds(self, direction: int) -> None:
+        if not self.project or not self.current_media_id:
+            return
+        step = float(self.scrub_config.get("seconds_step", 1.0))
+        self._seek_to(self._current_time_seconds() + (step * direction))
+
+    def _scrub_frames(self, direction: int) -> None:
+        if not self.project or not self.current_media_id:
+            return
+        frames_step = int(self.scrub_config.get("frames_step", 1))
+        seconds = self._frame_step_seconds() * frames_step * direction
+        self._seek_to(self._current_time_seconds() + seconds)
+
+    def _frame_step_seconds(self) -> float:
+        fallback = float(self.scrub_config.get("frame_fallback_seconds", 0.04))
+        if not self.project or not self.current_media_id:
+            return fallback
+        media = next((m for m in self.project.medias if m.id == self.current_media_id), None)
+        if not media or not media.fps:
+            return fallback
+        if media.fps <= 0:
+            return fallback
+        return 1.0 / media.fps
+
+    def _refresh_instructions(self) -> None:
+        self.instructions_label.setText(self._instructions_text())
+
+    def _instructions_text(self) -> str:
+        def key(name: str, default: str) -> str:
+            return self.hotkeys.get(name, default)
+
+        lines = [
+            "Quick guide:",
+            f"- New/Open project: {key('new_project', 'Ctrl+N')} / {key('open_project', 'Ctrl+O')}",
+            f"- Import videos: {key('import_videos', 'Ctrl+I')} (drag to reorder in the list)",
+            f"- Play/Pause: {key('play_pause', 'Space')} • Mute: {key('mute_audio', 'M')}",
+            f"- Scrub: {key('scrub_back', 'Left')} / {key('scrub_forward', 'Right')} "
+            f"({self.scrub_config.get('seconds_step', 1.0)}s)",
+            f"- Frame step: {key('scrub_frame_back', 'Shift+Left')} / {key('scrub_frame_forward', 'Shift+Right')} "
+            f"({self.scrub_config.get('frames_step', 1)} frame)",
+            f"- Mark In/Out: {key('mark_in', 'I')} / {key('mark_out', 'O')}",
+            f"- Add Comment/Chapter: {key('add_comment', 'Ctrl+Shift+C')} / {key('add_chapter', 'Ctrl+Shift+H')}",
+            "- Double-click a segment to jump to its start; use Edit/Delete buttons for segments and notes.",
+            f"- Export: {key('export', 'Ctrl+E')}",
+        ]
+        return "\n".join(lines)
+
+    def _apply_hotkeys(self, action_map: dict[str, QAction]) -> None:
+        for key, action in action_map.items():
+            shortcut = self.hotkeys.get(key)
+            if shortcut:
+                action.setShortcut(shortcut)
+
+    def _apply_tooltips(self, action_map: dict[str, QAction]) -> None:
+        descriptions = {
+            "new_project": "Create a new project",
+            "open_project": "Open an existing project",
+            "import_videos": "Import video files into the project",
+            "export": "Export highlights and text files",
+            "play_pause": "Play or pause the current video",
+            "mute_audio": "Toggle audio mute",
+            "mark_in": "Set segment start (Mark In)",
+            "mark_out": "Set segment end (Mark Out)",
+            "add_comment": "Add a comment note at the playhead",
+            "add_chapter": "Add a chapter note at the playhead",
+            "scrub_back": "Scrub backward by seconds",
+            "scrub_forward": "Scrub forward by seconds",
+            "scrub_frame_back": "Step backward by frames",
+            "scrub_frame_forward": "Step forward by frames",
+        }
+        for key, action in action_map.items():
+            hint = descriptions.get(key, "")
+            shortcut = self.hotkeys.get(key, "")
+            if shortcut:
+                action.setToolTip(f"{hint} ({shortcut})")
+            else:
+                action.setToolTip(hint)
+
+    def _sync_hotkey_labels(self) -> None:
+        mark_in_key = self.hotkeys.get("mark_in", "I")
+        mark_out_key = self.hotkeys.get("mark_out", "O")
+        self.segment_label.setText(f"Segments ({mark_in_key} = Mark In, {mark_out_key} = Mark Out)")
+        self._refresh_instructions()
+
+    def _apply_timeline_config(self) -> None:
+        show_labels = bool(self.timeline_config.get("show_labels", True))
+        label_max = int(self.timeline_config.get("label_max_chars", 12))
+        self.position_slider.set_config(self.colors, show_labels, label_max)
+
+    def _sync_mute_action_text(self) -> None:
+        self.mute_action.setText("Mute Audio" if not self.audio.isMuted() else "Unmute Audio")
+
+    def _set_mark_indicator(self, active: bool) -> None:
+        if active:
+            self.mark_in_indicator.setText("Mark In: ON")
+            self.mark_in_indicator.setStyleSheet("color: white; background-color: #c0392b; padding: 4px;")
+        else:
+            self.mark_in_indicator.setText("Mark In: OFF")
+            self.mark_in_indicator.setStyleSheet("color: #2c3e50; background-color: #ecf0f1; padding: 4px;")
+
+    def _update_timeline_markers(self) -> None:
+        if not self.project or not self.current_media_id:
+            self.position_slider.set_markers([], [], [])
+            self.position_slider.set_active_segment(None, None)
+            return
+        segments = [
+            SegmentMarker(start=s.start, end=s.end, label=s.label)
+            for s in sorted(self.project.segments, key=lambda s: s.start)
+            if s.media_id == self.current_media_id
+        ]
+        notes = [n for n in self.project.notes if n.media_id == self.current_media_id]
+        chapters = [
+            NoteMarker(timestamp=n.timestamp, label=n.text or "Chapter")
+            for n in sorted(notes, key=lambda n: n.timestamp)
+            if n.type == "chapter"
+        ]
+        comments = [
+            NoteMarker(timestamp=n.timestamp, label=n.text or "Comment")
+            for n in sorted(notes, key=lambda n: n.timestamp)
+            if n.type == "comment"
+        ]
+        self.position_slider.set_markers(segments, chapters, comments)
+        if self.mark_in_time is not None:
+            current_time = self._current_time_seconds()
+            start = self.mark_in_time
+            end = current_time if current_time >= start else start
+            self.position_slider.set_active_segment(start, end)
+        else:
+            self.position_slider.set_active_segment(None, None)

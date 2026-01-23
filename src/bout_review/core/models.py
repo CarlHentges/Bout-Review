@@ -20,6 +20,7 @@ class MediaItem:
     id: str
     filename: str  # stored relative to project/videos
     duration: float
+    fps: Optional[float] = None
     rotation_probe: int = 0
     rotation_override: Optional[int] = None
     imported_at: str = field(default_factory=_utc_now_iso)
@@ -34,6 +35,7 @@ class MediaItem:
             id=data["id"],
             filename=data["filename"],
             duration=float(data.get("duration", 0.0)),
+            fps=data.get("fps"),
             rotation_probe=int(data.get("rotation_probe", 0)),
             rotation_override=data.get("rotation_override"),
             imported_at=data.get("imported_at", _utc_now_iso()),

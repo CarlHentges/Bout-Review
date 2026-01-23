@@ -31,6 +31,7 @@ def import_media_files(project: Project, files: Iterable[Path]) -> List[MediaIte
             id=generate_id(),
             filename=dest.name,
             duration=metadata.duration,
+            fps=metadata.fps,
             rotation_probe=metadata.rotation,
         )
         imported.append(item)
