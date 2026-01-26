@@ -26,6 +26,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "mark_out": "O",
         "add_comment": "Ctrl+Shift+C",
         "add_chapter": "Ctrl+Shift+H",
+        "score_tracker": "Ctrl+Shift+S",
         "scrub_back": "Left",
         "scrub_forward": "Right",
         "scrub_frame_back": "Shift+Left",

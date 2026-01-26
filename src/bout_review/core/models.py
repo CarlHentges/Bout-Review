@@ -49,6 +49,8 @@ class Segment:
     start: float
     end: float
     label: str = ""
+    # Playback speed multiplier for the exported clip. 1.0 = real time; <1 slows down; >1 speeds up.
+    speed: float = 1.0
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -61,6 +63,7 @@ class Segment:
             start=float(data["start"]),
             end=float(data["end"]),
             label=data.get("label", ""),
+            speed=float(data.get("speed", 1.0) or 1.0),
         )
 
 

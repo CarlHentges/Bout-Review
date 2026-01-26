@@ -1,6 +1,16 @@
 # Bout Review
 
+![Bout Review icon](src/bout_review/assets/bout_review_icon.png)
+
 Desktop app for reviewing fencing bouts: import videos, mark segments, add notes, and export highlights + chapter timestamps.
+
+## What's new (v1.1)
+- Score tracker window (always on top): log Point Left/Right/No Point, optionally auto-increment scores, and drop timestamped comments at the playhead.
+- Per-segment playback speed: set slow/fast motion when editing or duplicating segments; speeds carry through to exported clips and stitched highlights.
+- One-shot edit dialogs: edit all segment fields (start, end, label, speed) or note fields (timestamp, type, text) in a single window; duplicate segments with custom speed and label.
+
+## UI Preview
+![Bout Review screenshot](images/image.jpeg)
 
 ## Run (development)
 

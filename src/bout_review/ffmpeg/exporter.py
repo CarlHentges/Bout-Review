@@ -51,8 +51,10 @@ def _scale_filter() -> str:
     return f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:black"
 
 
-def _build_vf(rotation: int) -> str:
+def _build_vf(rotation: int, speed: float = 1.0) -> str:
     filters = []
+    if speed and abs(speed - 1.0) > 1e-3:
+        filters.append(f"setpts=PTS/{speed:.6f}")
     rot = _rotation_filter(rotation)
     if rot:
         filters.append(rot)
@@ -60,11 +62,35 @@ def _build_vf(rotation: int) -> str:
     return ",".join(filters)
 
 
+def _atempo_filters(speed: float) -> str:
+    """Return a comma-separated chain of atempo filters that approximate `speed`.
+
+    ffmpeg's atempo supports factors between 0.5 and 2.0, so we decompose larger/smaller
+    values into a product of supported chunks (e.g., 4.0 -> 2.0,2.0; 0.25 -> 0.5,0.5).
+    """
+    if speed <= 0:
+        return ""
+    factors = []
+    remaining = speed
+    while remaining > 2.0:
+        factors.append(2.0)
+        remaining /= 2.0
+    while remaining < 0.5:
+        factors.append(0.5)
+        remaining /= 0.5
+    if abs(remaining - 1.0) > 1e-4:
+        factors.append(remaining)
+    if not factors:
+        return ""
+    return ",".join(f"atempo={f:.6f}" for f in factors)
+
+
 def build_timeline(segments: List[Segment]) -> List[Tuple[Segment, float, float]]:
     timeline = []
     offset = 0.0
     for seg in segments:
-        duration = max(0.0, seg.end - seg.start)
+        speed = max(0.001, float(getattr(seg, "speed", 1.0) or 1.0))
+        duration = max(0.0, seg.end - seg.start) / speed
         timeline.append((seg, offset, offset + duration))
         offset += duration
     return timeline
@@ -90,7 +116,8 @@ def _map_to_highlight(note: Note, timeline: List[Tuple[Segment, float, float]]) 
         if seg.media_id != note.media_id:
             continue
         if seg.start <= note.timestamp <= seg.end:
-            return start_out + (note.timestamp - seg.start)
+            speed = max(0.001, float(getattr(seg, "speed", 1.0) or 1.0))
+            return start_out + (note.timestamp - seg.start) / speed
     return None
 
 
@@ -100,12 +127,16 @@ def _render_clip(
     start: float,
     end: float,
     rotation: int,
+    speed: float,
     output: Path,
     log_path: Path,
 ) -> Path:
     start = max(0.0, start)
     duration = max(0.0, end - start)
-    vf = _build_vf(rotation)
+    speed = max(0.001, speed)
+    effective_duration = duration / speed if speed > 0 else duration
+    vf = _build_vf(rotation, speed)
+    atempo_chain = _atempo_filters(speed)
     cmd = [
         str(ffmpeg),
         "-y",
@@ -114,7 +145,7 @@ def _render_clip(
         "-i",
         str(source),
         "-t",
-        f"{duration:.3f}",
+        f"{effective_duration:.3f}",
         "-vf",
         vf,
         "-c:v",
@@ -125,6 +156,10 @@ def _render_clip(
         "20",
         "-c:a",
         "aac",
+    ]
+    if atempo_chain:
+        cmd += ["-af", atempo_chain]
+    cmd += [
         "-movflags",
         "+faststart",
         str(output),
@@ -151,8 +186,14 @@ def _concat_highlight(ffmpeg: Path, clip_paths: List[Path], output: Path, log_pa
         "0",
         "-i",
         str(list_path),
-        "-c",
-        "copy",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "20",
+        "-c:a",
+        "aac",
         "-movflags",
         "+faststart",
         str(output),
@@ -251,6 +292,7 @@ def export_project(project: Project) -> ExportResult:
             start=segment.start,
             end=segment.end,
             rotation=rotation,
+            speed=max(0.05, float(getattr(segment, "speed", 1.0) or 1.0)),
             output=dest,
             log_path=log_path,
         )

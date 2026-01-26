@@ -21,6 +21,12 @@ from PySide6.QtWidgets import (
     QStatusBar,
     QToolBar,
     QVBoxLayout,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
+    QLineEdit,
+    QDoubleSpinBox,
+    QComboBox,
     QWidget,
 )
 
@@ -31,6 +37,121 @@ from ..ffmpeg.exporter import build_timeline, chapter_lines_with_warnings, expor
 from ..utils.config import load_config
 from ..utils.timecode import to_timestamp
 from .timeline_slider import NoteMarker, SegmentMarker, TimelineSlider
+from .score_tracker import ScoreTrackerWindow
+
+
+class SegmentDialog(QDialog):
+    def __init__(
+        self,
+        parent,
+        title: str,
+        start: float,
+        end: float,
+        label: str,
+        speed: float,
+        max_duration: float | None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setModal(True)
+
+        self.start_spin = QDoubleSpinBox()
+        self.start_spin.setDecimals(3)
+        self.start_spin.setSingleStep(0.05)
+        self.start_spin.setRange(0.0, max(0.0, max_duration or 10_000.0))
+        self.start_spin.setValue(max(0.0, start))
+
+        self.end_spin = QDoubleSpinBox()
+        self.end_spin.setDecimals(3)
+        self.end_spin.setSingleStep(0.05)
+        self.end_spin.setRange(0.0, max(0.0, max_duration or 10_000.0))
+        self.end_spin.setValue(max(0.0, end))
+
+        self.speed_spin = QDoubleSpinBox()
+        self.speed_spin.setDecimals(3)
+        self.speed_spin.setSingleStep(0.05)
+        self.speed_spin.setRange(0.1, 8.0)
+        self.speed_spin.setValue(max(0.1, speed))
+
+        self.label_edit = QLineEdit(label)
+
+        form = QFormLayout()
+        form.addRow("Start (s)", self.start_spin)
+        form.addRow("End (s)", self.end_spin)
+        form.addRow("Label", self.label_edit)
+        form.addRow("Speed", self.speed_spin)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout()
+        layout.addLayout(form)
+        layout.addWidget(buttons)
+        self.setLayout(layout)
+
+    def accept(self) -> None:
+        if self.end_spin.value() <= self.start_spin.value():
+            QMessageBox.warning(self, "Invalid segment", "End must be after start.")
+            return
+        super().accept()
+
+    def values(self) -> tuple[float, float, str, float]:
+        return (
+            float(self.start_spin.value()),
+            float(self.end_spin.value()),
+            self.label_edit.text().strip(),
+            float(self.speed_spin.value()),
+        )
+
+
+class NoteDialog(QDialog):
+    def __init__(
+        self,
+        parent,
+        title: str,
+        timestamp: float,
+        note_type: str,
+        text: str,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setModal(True)
+
+        self.time_spin = QDoubleSpinBox()
+        self.time_spin.setDecimals(3)
+        self.time_spin.setRange(0.0, 1e9)
+        self.time_spin.setSingleStep(0.1)
+        self.time_spin.setValue(max(0.0, timestamp))
+
+        self.type_combo = QComboBox()
+        self.type_combo.addItems(["comment", "chapter"])
+        idx = self.type_combo.findText(note_type)
+        if idx >= 0:
+            self.type_combo.setCurrentIndex(idx)
+
+        self.text_edit = QLineEdit(text)
+
+        form = QFormLayout()
+        form.addRow("Timestamp (s)", self.time_spin)
+        form.addRow("Type", self.type_combo)
+        form.addRow("Text", self.text_edit)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout()
+        layout.addLayout(form)
+        layout.addWidget(buttons)
+        self.setLayout(layout)
+
+    def values(self) -> tuple[float, str, str]:
+        return (
+            float(self.time_spin.value()),
+            self.type_combo.currentText(),
+            self.text_edit.text().strip(),
+        )
 
 
 class MainWindow(QMainWindow):
@@ -49,6 +170,7 @@ class MainWindow(QMainWindow):
         self.project: Project | None = None
         self.current_media_id: str | None = None
         self.mark_in_time: float | None = None
+        self.score_tracker: ScoreTrackerWindow | None = None
 
         self.player = QMediaPlayer(self)
         self.audio = QAudioOutput(self)
@@ -85,8 +207,10 @@ class MainWindow(QMainWindow):
         self._set_mark_indicator(False)
         self.segment_edit_button = QPushButton("Edit segment")
         self.segment_delete_button = QPushButton("Delete segment")
+        self.segment_duplicate_button = QPushButton("Duplicate segment")
         self.segment_edit_button.clicked.connect(self._edit_segment)
         self.segment_delete_button.clicked.connect(self._delete_segment)
+        self.segment_duplicate_button.clicked.connect(self._duplicate_segment)
         self.note_label = QLabel("Notes")
         self.note_edit_button = QPushButton("Edit note")
         self.note_delete_button = QPushButton("Delete note")
@@ -112,6 +236,7 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.segment_list)
         segment_buttons = QHBoxLayout()
         segment_buttons.addWidget(self.segment_edit_button)
+        segment_buttons.addWidget(self.segment_duplicate_button)
         segment_buttons.addWidget(self.segment_delete_button)
         left_layout.addLayout(segment_buttons)
         left_layout.addWidget(self.note_label)
@@ -152,6 +277,7 @@ class MainWindow(QMainWindow):
         mark_out_action = QAction("Mark Out", self, triggered=self._mark_out)
         comment_action = QAction("Add Comment", self, triggered=lambda: self._add_note("comment"))
         chapter_action = QAction("Add Chapter", self, triggered=lambda: self._add_note("chapter"))
+        score_action = QAction("Score Tracker", self, triggered=self._open_score_tracker)
         scrub_back_action = QAction("Scrub Back", self, triggered=lambda: self._scrub_seconds(-1))
         scrub_forward_action = QAction("Scrub Forward", self, triggered=lambda: self._scrub_seconds(1))
         scrub_frame_back_action = QAction(
@@ -173,6 +299,7 @@ class MainWindow(QMainWindow):
             "mark_out": mark_out_action,
             "add_comment": comment_action,
             "add_chapter": chapter_action,
+            "score_tracker": score_action,
             "scrub_back": scrub_back_action,
             "scrub_forward": scrub_forward_action,
             "scrub_frame_back": scrub_frame_back_action,
@@ -202,6 +329,7 @@ class MainWindow(QMainWindow):
             mark_out_action,
             comment_action,
             chapter_action,
+            score_action,
         ]:
             toolbar.addAction(action)
 
@@ -256,6 +384,7 @@ class MainWindow(QMainWindow):
         self.import_button.setEnabled(True)
         self.current_media_id = None
         self.mark_in_time = None
+        self._reset_score_tracker()
         self._set_mark_indicator(False)
         self._refresh_video_list()
         self._refresh_segments()
@@ -439,31 +568,26 @@ class MainWindow(QMainWindow):
         if not segment or not self.project:
             QMessageBox.information(self, "No segment", "Select a segment to edit.")
             return
-        start, ok = QInputDialog.getDouble(
-            self, "Edit segment", "Start time (seconds):", value=segment.start, min=0.0, decimals=3
-        )
-        if not ok:
-            return
-        end, ok = QInputDialog.getDouble(
-            self, "Edit segment", "End time (seconds):", value=segment.end, min=0.0, decimals=3
-        )
-        if not ok:
-            return
-        if end <= start:
-            QMessageBox.warning(self, "Invalid segment", "End must be after start.")
-            return
-        label, ok = QInputDialog.getText(self, "Edit segment", "Label:", text=segment.label)
-        if not ok:
-            return
         media = next((m for m in self.project.medias if m.id == segment.media_id), None)
+        dlg = SegmentDialog(
+            self,
+            "Edit segment",
+            start=segment.start,
+            end=segment.end,
+            label=segment.label,
+            speed=float(getattr(segment, "speed", 1.0) or 1.0),
+            max_duration=media.duration if media else None,
+        )
+        if dlg.exec() != QDialog.Accepted:
+            return
+        start, end, label, speed = dlg.values()
         if media and end > media.duration:
-            QMessageBox.warning(
-                self, "Invalid segment", "End time exceeds media duration. Adjust and try again."
-            )
+            QMessageBox.warning(self, "Invalid segment", "End time exceeds media duration.")
             return
         segment.start = start
         segment.end = end
-        segment.label = label.strip()
+        segment.label = label
+        segment.speed = speed
         save_project(self.project)
         self._refresh_segments()
         self.statusBar().showMessage("Segment updated", 2000)
@@ -478,6 +602,42 @@ class MainWindow(QMainWindow):
         self._refresh_segments()
         self.statusBar().showMessage("Segment deleted", 2000)
 
+    def _duplicate_segment(self) -> None:
+        segment = self._selected_segment()
+        if not segment or not self.project:
+            QMessageBox.information(self, "No segment", "Select a segment to duplicate.")
+            return
+        default_speed = float(getattr(segment, "speed", 1.0) or 1.0)
+        base_label = segment.label or f"E{len(self.project.segments) + 1}"
+        suggested_label = (
+            f"{base_label} x{default_speed:g}" if abs(default_speed - 1.0) > 1e-3 else f"{base_label} copy"
+        )
+        media = next((m for m in self.project.medias if m.id == segment.media_id), None)
+        dlg = SegmentDialog(
+            self,
+            "Duplicate segment",
+            start=segment.start,
+            end=segment.end,
+            label=suggested_label,
+            speed=default_speed,
+            max_duration=media.duration if media else None,
+        )
+        if dlg.exec() != QDialog.Accepted:
+            return
+        start, end, label, speed = dlg.values()
+        duplicate = Segment(
+            id=generate_id(),
+            media_id=segment.media_id,
+            start=start,
+            end=end,
+            label=label.strip(),
+            speed=speed,
+        )
+        self.project.segments.append(duplicate)
+        save_project(self.project)
+        self._refresh_segments()
+        self.statusBar().showMessage("Segment duplicated", 2000)
+
     def _refresh_segments(self) -> None:
         self.segment_list.clear()
         if not self.project:
@@ -486,7 +646,9 @@ class MainWindow(QMainWindow):
         for segment in segments:
             start = to_timestamp(segment.start)
             end = to_timestamp(segment.end)
-            item = QListWidgetItem(f"{segment.label or segment.id[:5]}  {start} - {end}")
+            speed = float(getattr(segment, "speed", 1.0) or 1.0)
+            speed_suffix = f"  x{speed:g}" if abs(speed - 1.0) > 1e-3 else ""
+            item = QListWidgetItem(f"{segment.label or segment.id[:5]}  {start} - {end}{speed_suffix}")
             item.setData(Qt.UserRole, segment.id)
             self.segment_list.addItem(item)
         self._update_timeline_markers()
@@ -527,16 +689,19 @@ class MainWindow(QMainWindow):
         if not note or not self.project:
             QMessageBox.information(self, "No note", "Select a note to edit.")
             return
-        timestamp, ok = QInputDialog.getDouble(
-            self, "Edit note", "Timestamp (seconds):", value=note.timestamp, min=0.0, decimals=3
+        dlg = NoteDialog(
+            self,
+            "Edit note",
+            timestamp=note.timestamp,
+            note_type=note.type,
+            text=note.text,
         )
-        if not ok:
+        if dlg.exec() != QDialog.Accepted:
             return
-        text, ok = QInputDialog.getText(self, "Edit note", "Note text:", text=note.text)
-        if not ok:
-            return
+        timestamp, note_type, text = dlg.values()
         note.timestamp = timestamp
-        note.text = text.strip()
+        note.type = note_type
+        note.text = text
         save_project(self.project)
         self._refresh_notes()
         self._update_timeline_markers()
@@ -552,6 +717,72 @@ class MainWindow(QMainWindow):
         self._refresh_notes()
         self._update_timeline_markers()
         self.statusBar().showMessage("Note deleted", 1500)
+
+    # Score tracker -----------------------------------------------------------
+    def _open_score_tracker(self) -> None:
+        if self.score_tracker:
+            self.score_tracker.show()
+            self.score_tracker.raise_()
+            self.score_tracker.activateWindow()
+            return
+        self.score_tracker = ScoreTrackerWindow(self)
+        self.score_tracker.point_left.connect(self._on_point_left)
+        self.score_tracker.point_right.connect(self._on_point_right)
+        self.score_tracker.no_point.connect(self._on_no_point)
+        self.score_tracker.destroyed.connect(lambda: setattr(self, "score_tracker", None))
+        self.score_tracker.show()
+
+    def _reset_score_tracker(self) -> None:
+        if self.score_tracker:
+            self.score_tracker.reset_scores()
+
+    def _score_suffix(self) -> str:
+        if not self.score_tracker:
+            return ""
+        left, right = self.score_tracker.scores()
+        return f" (L {left} - {right} R)"
+
+    def _add_quick_comment(self, text: str) -> None:
+        if not self._require_media():
+            return
+        note = Note(
+            id=generate_id(),
+            media_id=self.current_media_id,
+            timestamp=self._current_time_seconds(),
+            type="comment",
+            text=text.strip(),
+        )
+        self.project.notes.append(note)
+        save_project(self.project)
+        self._refresh_notes()
+        self._update_timeline_markers()
+        self.statusBar().showMessage("Comment added", 1500)
+
+    def _on_point_left(self) -> None:
+        if not self._require_media():
+            return
+        if not self.score_tracker:
+            self._open_score_tracker()
+        if self.score_tracker and self.score_tracker.auto_score_enabled():
+            self.score_tracker.increment_left()
+        suffix = self._score_suffix() if self.score_tracker and self.score_tracker.auto_score_enabled() else ""
+        self._add_quick_comment(f"Point Left{suffix}")
+
+    def _on_point_right(self) -> None:
+        if not self._require_media():
+            return
+        if not self.score_tracker:
+            self._open_score_tracker()
+        if self.score_tracker and self.score_tracker.auto_score_enabled():
+            self.score_tracker.increment_right()
+        suffix = self._score_suffix() if self.score_tracker and self.score_tracker.auto_score_enabled() else ""
+        self._add_quick_comment(f"Point Right{suffix}")
+
+    def _on_no_point(self) -> None:
+        if not self._require_media():
+            return
+        suffix = self._score_suffix() if self.score_tracker else ""
+        self._add_quick_comment(f"No Point (Simul / Off target){suffix}")
 
     def _refresh_notes(self) -> None:
         self.notes_list.clear()
@@ -670,6 +901,7 @@ class MainWindow(QMainWindow):
             f"({self.scrub_config.get('frames_step', 1)} frame)",
             f"- Mark In/Out: {key('mark_in', 'I')} / {key('mark_out', 'O')}",
             f"- Add Comment/Chapter: {key('add_comment', 'Ctrl+Shift+C')} / {key('add_chapter', 'Ctrl+Shift+H')}",
+            f"- Score tracker: {key('score_tracker', 'Ctrl+Shift+S')} or toolbar button for quick point comments (+ optional auto score).",
             "- Double-click a segment to jump to its start; use Edit/Delete buttons for segments and notes.",
             f"- Open exports folder: {key('open_exports', 'Ctrl+Shift+E')}",
             f"- Export: {key('export', 'Ctrl+E')}",
@@ -695,6 +927,7 @@ class MainWindow(QMainWindow):
             "mark_out": "Set segment end (Mark Out)",
             "add_comment": "Add a comment note at the playhead",
             "add_chapter": "Add a chapter note at the playhead",
+            "score_tracker": "Open score tracker window for quick point comments",
             "scrub_back": "Scrub backward by seconds",
             "scrub_forward": "Scrub forward by seconds",
             "scrub_frame_back": "Step backward by frames",
