@@ -1,0 +1,53 @@
+name: Build releases
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-13
+            label: macOS
+          - os: ubuntu-latest
+            label: Linux
+          - os: windows-latest
+            label: Windows
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e .
+          python -m pip install pyinstaller pillow
+
+      - name: Build with PyInstaller
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: pyinstaller -y BoutReview.spec
+
+      - name: Package platform zip
+        run: python scripts/package_release.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Bout_Review_${{ matrix.label }}
+          path: dist/Bout_Review_*.zip
