@@ -135,6 +135,10 @@ if dynload_dir.exists():
         if item.is_file():
             binaries.append((str(item), f"python{ver}/lib-dynload"))
 
+# Drop any binaries/datas whose source paths don't exist (avoid CI failures on optional paths).
+datas = [(src, dest) for src, dest in datas if Path(src).exists()]
+binaries = [(src, dest) for src, dest in binaries if Path(src).exists()]
+
 block_cipher = None
 
 a = Analysis(
