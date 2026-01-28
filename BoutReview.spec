@@ -1,4 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
+import sys
 from pathlib import Path
 import subprocess
 import tempfile
@@ -10,8 +11,10 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 spec_path = Path(globals().get("__file__", Path.cwd())).resolve()
 project_root = spec_path.parent if spec_path.is_file() else spec_path
 src_root = project_root / "src"
+APP_VERSION = "1.2.0"
 
 icon_icns = src_root / "bout_review" / "assets" / "bout_review_icon.icns"
+icon_ico = src_root / "bout_review" / "assets" / "bout_review_icon.ico"
 icon_png = src_root / "bout_review" / "assets" / "bout_review_icon.png"
 
 
@@ -77,7 +80,25 @@ def _ensure_icns(png_path: Path, icns_path: Path) -> Path | None:
     return None
 
 
-icon_path = _ensure_icns(icon_png, icon_icns)
+def _ensure_ico(png_path: Path, ico_path: Path) -> Path | None:
+    if ico_path.exists():
+        return ico_path
+    try:
+        from PIL import Image  # type: ignore
+
+        img = Image.open(png_path)
+        # Save multi-size icon for better scaling on Windows
+        img.save(ico_path, sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+        if ico_path.exists():
+            return ico_path
+    except Exception as exc:
+        print(f"ICO conversion failed: {exc}. Install Pillow or provide an .ico icon.")
+    return None
+
+
+is_macos = sys.platform == "darwin"
+icon_path = _ensure_icns(icon_png, icon_icns) if is_macos else None
+icon_path_ico = _ensure_ico(icon_png, icon_ico)
 
 ffmpeg_path = Path(imageio_ffmpeg.get_ffmpeg_exe())
 ffprobe_path = ffmpeg_path.with_name("ffprobe")
@@ -86,6 +107,8 @@ datas = collect_data_files("imageio_ffmpeg", include_py_files=False)
 datas.append((str(icon_png), "bout_review/assets"))
 if icon_icns.exists():
     datas.append((str(icon_icns), "bout_review/assets"))
+if icon_ico.exists():
+    datas.append((str(icon_ico), "bout_review/assets"))
 
 binaries = [(str(ffmpeg_path), "ffmpeg")]
 if ffprobe_path.exists():
@@ -121,6 +144,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
+    icon=str(icon_path_ico) if icon_path_ico else None,
 )
 
 coll = COLLECT(
@@ -133,16 +157,17 @@ coll = COLLECT(
     name="Bout Review",
 )
 
-app = BUNDLE(
-    coll,
-    name="Bout Review.app",
-    icon=str(icon_path) if icon_path else None,
-    info_plist={
-        "CFBundleName": "Bout Review",
-        "CFBundleDisplayName": "Bout Review",
-        "CFBundleIdentifier": "com.boutreview.app",
-        "CFBundleShortVersionString": "1.0.0",
-        "CFBundleVersion": "1.0.0",
-        "NSHighResolutionCapable": True,
-    },
-)
+if is_macos:
+    app = BUNDLE(
+        coll,
+        name="Bout Review.app",
+        icon=str(icon_path) if icon_path else None,
+        info_plist={
+            "CFBundleName": "Bout Review",
+            "CFBundleDisplayName": "Bout Review",
+            "CFBundleIdentifier": "com.boutreview.app",
+            "CFBundleShortVersionString": APP_VERSION,
+            "CFBundleVersion": APP_VERSION,
+            "NSHighResolutionCapable": True,
+        },
+    )

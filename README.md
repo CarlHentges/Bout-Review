@@ -3,6 +3,11 @@
 
 Desktop app for reviewing fencing bouts: import videos, mark segments, add notes, and export highlights + chapter timestamps.
 
+## What's new (v1.2)
+- Timeline scrubber now jumps to any click position—no more drag-only playhead.
+- Export gap fast-forward: optional button under the video to render unselected parts at a chosen speed in the highlights output.
+- Cross-platform PyInstaller spec + `scripts/package_release.py` for Windows and Linux zip builds.
+
 ## What's new (v1.1)
 - Score tracker window (always on top): log Point Left/Right/No Point, optionally auto-increment scores, and drop timestamped comments at the playhead.
 - Per-segment playback speed: set slow/fast motion when editing or duplicating segments; speeds carry through to exported clips and stitched highlights.
@@ -12,7 +17,8 @@ Desktop app for reviewing fencing bouts: import videos, mark segments, add notes
 - Launch the app.
 - **Create/open a project**: click *New Project* or *Open Project*, and create a folder where you want the output files to be.
 - **Import videos**: Select *Import Videos* and choose files. (If you have multiple videos, drag to reorder them in the display).
-- **Play**: select a video; **spacebar** = play/pause, **M** = mute toggle.**Left/Right** arrows scrub seconds; **Shift+Left/Right** step frames.
+- **Play**: select a video; **spacebar** = play/pause, **M** = mute toggle. **Left/Right** arrows scrub seconds; **Shift+Left/Right** step frames.
+- **Export gap fast-forward**: button under the video toggles including unselected gaps in the highlights at your chosen speed (default 3×).
 - **Mark segments**: To Mark the action, at the start use **I** (Mark In), at end press **O** (Mark Out). Segments appear in the list; double-click to jump.
 - **[Optional] Edit/duplicate segments**: select a segment -> Edit segment (start/end/label/speed) or Duplicate segment.
 - **[Optional] notes**: move playhead -> Add Comment or Add Chapter; double-click a note to edit timestamp/type/text.
@@ -30,8 +36,13 @@ Go to the releases page [https://github.com/CarlHentges/Bout-Review/releases](ht
 
 ### Windows
 1) Download `Bout_Review_Windows-x64.zip`
-2) Extract the file, this is a portable windows application so can be run from anywhere (e.g loaded on a usb drive) but it must remain in its folder.
-3) Create a shortcut, and move the shortcut to the desktop, if you wish to launch it directly from there.
+2) Extract the file (portable app). Keep all files together in the folder.
+3) Run `Bout Review.exe` (create a desktop shortcut if you like).
+
+### Linux
+1) Download `Bout_Review_Linux-x64.zip`
+2) Extract the folder.
+3) Run `./Bout\\ Review/Bout\\ Review` (mark executable if needed: `chmod +x \"Bout Review/Bout Review\"`).
 
 
 ## Development Notes
@@ -45,6 +56,16 @@ python -m bout_review
 ```
 
 On first run, a `bout_review_config.json` is created in the repo root for colors + hotkeys.
+
+### Build releases (Mac / Windows / Linux)
+
+```bash
+pip install pyinstaller pillow
+pyinstaller BoutReview.spec
+python scripts/package_release.py
+```
+
+Outputs land in `dist/` as `Bout_Review_<Platform>-<arch>.zip` (e.g., `Bout_Review_Windows-x64.zip`, `Bout_Review_Linux-x64.zip`, `Bout_Review_Mac-arm64.zip`). Run the executable inside the unzipped folder for your OS.
 
 ### PyInstaller
 
@@ -60,15 +81,17 @@ pyinstaller BoutReview.spec
 
 3) Result:
 ```
-dist/Bout Review.app
+macOS:   dist/Bout Review.app
+Windows: dist/Bout Review/Bout Review.exe
+Linux:   dist/Bout Review/Bout Review
 ```
 
+4) Package for release:
 ```bash
-ditto -c -k --sequesterRsrc --keepParent "dist/Bout Review.app" "Bout Review.zip"
+python scripts/package_release.py
 ```
-They can unzip and run. On first launch they may need to right-click → Open to bypass Gatekeeper (unsigned app).
+This zips the right folder for your platform into `dist/Bout_Review_<Platform>-<arch>.zip`.
 
 ### Notes
 - The build bundles an FFmpeg binary from `imageio-ffmpeg` so no system FFmpeg install is needed.
 - App icon uses `src/bout_review/assets/bout_review_icon.png` at runtime.
-

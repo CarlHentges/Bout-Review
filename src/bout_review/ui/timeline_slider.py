@@ -66,6 +66,40 @@ class TimelineSlider(QSlider):
         self._label_max_chars = max(4, int(label_max_chars))
         self.update()
 
+    def mousePressEvent(self, event) -> None:
+        """Allow jumping the playhead by clicking anywhere on the groove, not just dragging the handle."""
+        if event.button() == Qt.LeftButton:
+            opt = QStyleOptionSlider()
+            self.initStyleOption(opt)
+            evt_point = event.position().toPoint() if hasattr(event, "position") else event.pos()
+            handle = self.style().subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderHandle, self)
+            if not handle.contains(evt_point):
+                groove = self.style().subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderGroove, self)
+                if groove.contains(evt_point) and groove.width() > 0 and groove.height() > 0:
+                    if self.orientation() == Qt.Horizontal:
+                        pos = event.position().x() if hasattr(event, "position") else event.x()
+                        span = groove.width()
+                        offset = pos - groove.x()
+                    else:
+                        pos = event.position().y() if hasattr(event, "position") else event.y()
+                        span = groove.height()
+                        offset = pos - groove.y()
+                    offset = max(0, min(span, offset))
+                    value = QStyle.sliderValueFromPosition(
+                        self.minimum(),
+                        self.maximum(),
+                        int(offset),
+                        span,
+                        opt.upsideDown,
+                    )
+                    self.setSliderDown(True)
+                    self.sliderPressed.emit()
+                    self.setValue(value)
+                    self.sliderMoved.emit(value)
+                    event.accept()
+                    return
+        super().mousePressEvent(event)
+
     def paintEvent(self, event) -> None:
         super().paintEvent(event)
         if self._duration_seconds <= 0:

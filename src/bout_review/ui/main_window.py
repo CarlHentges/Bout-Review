@@ -33,7 +33,12 @@ from PySide6.QtWidgets import (
 from ..core.importer import import_media_files
 from ..core.models import Note, Project, Segment, generate_id
 from ..core.project_io import create_project, load_project, save_project
-from ..ffmpeg.exporter import build_timeline, chapter_lines_with_warnings, export_project
+from ..ffmpeg.exporter import (
+    build_timeline,
+    chapter_lines_with_warnings,
+    export_project,
+    export_slices,
+)
 from ..utils.config import load_config
 from ..utils.timecode import to_timestamp
 from .timeline_slider import NoteMarker, SegmentMarker, TimelineSlider
@@ -166,11 +171,16 @@ class MainWindow(QMainWindow):
         self.timeline_config = self.config.get("timeline", {})
         self.audio_config = self.config.get("audio", {})
         self.scrub_config = self.config.get("scrub", {})
+        self.export_config = self.config.get("export", {})
 
         self.project: Project | None = None
         self.current_media_id: str | None = None
         self.mark_in_time: float | None = None
         self.score_tracker: ScoreTrackerWindow | None = None
+        self.export_gap_ff_enabled: bool = bool(
+            self.export_config.get("fast_forward_gaps_enabled", False)
+        )
+        self.export_gap_speed: float = max(1.0, float(self.export_config.get("gap_speed", 3.0)))
 
         self.player = QMediaPlayer(self)
         self.audio = QAudioOutput(self)
@@ -185,6 +195,16 @@ class MainWindow(QMainWindow):
         self.position_slider = TimelineSlider(Qt.Horizontal)
         self.position_slider.setEnabled(False)
         self.position_label = QLabel("00:00 / 00:00")
+        self.gap_ff_button = QPushButton()
+        self.gap_ff_button.setCheckable(True)
+        self.gap_ff_button.setChecked(self.export_gap_ff_enabled)
+        self.gap_ff_button.clicked.connect(self._toggle_gap_fast_forward)
+        self.gap_speed_spin = QDoubleSpinBox()
+        self.gap_speed_spin.setDecimals(2)
+        self.gap_speed_spin.setRange(1.0, 10.0)
+        self.gap_speed_spin.setSingleStep(0.25)
+        self.gap_speed_spin.setValue(self.export_gap_speed)
+        self.gap_speed_spin.valueChanged.connect(self._on_gap_speed_changed)
         self.instructions_label = QLabel()
         self.instructions_label.setWordWrap(True)
         self.instructions_label.setStyleSheet("padding: 8px;")
@@ -223,6 +243,8 @@ class MainWindow(QMainWindow):
         self._apply_timeline_config()
         self._sync_hotkey_labels()
         self._sync_mute_action_text()
+        self.gap_speed_spin.setEnabled(self.export_gap_ff_enabled)
+        self._sync_gap_ff_button_text()
         self._apply_window_icon()
 
     # UI setup -----------------------------------------------------------------
@@ -250,6 +272,12 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.video_widget, 6)
         right_layout.addWidget(self.position_slider, 0)
         right_layout.addWidget(self.position_label, 0)
+        gap_ff_row = QHBoxLayout()
+        gap_ff_row.addWidget(self.gap_ff_button)
+        gap_ff_row.addWidget(QLabel("Gap speed (export):"))
+        gap_ff_row.addWidget(self.gap_speed_spin)
+        gap_ff_row.addStretch()
+        right_layout.addLayout(gap_ff_row, 0)
         right_layout.addWidget(self.instructions_label, 1)
 
         main_layout = QHBoxLayout()
@@ -382,6 +410,9 @@ class MainWindow(QMainWindow):
 
     def _after_project_loaded(self) -> None:
         self.import_button.setEnabled(True)
+        self.gap_ff_button.setChecked(self.export_gap_ff_enabled)
+        self.gap_speed_spin.setEnabled(self.export_gap_ff_enabled)
+        self._sync_gap_ff_button_text()
         self.current_media_id = None
         self.mark_in_time = None
         self._reset_score_tracker()
@@ -803,7 +834,10 @@ class MainWindow(QMainWindow):
         if not self.project.segments:
             QMessageBox.information(self, "No segments", "Mark keep ranges before exporting.")
             return
-        timeline = build_timeline(self.project.segments)
+        slices = export_slices(
+            self.project, include_gaps=self.export_gap_ff_enabled, gap_speed=self.export_gap_speed
+        )
+        timeline = build_timeline(slices)
         total_duration = timeline[-1][2] if timeline else 0.0
         _, warnings = chapter_lines_with_warnings(self.project, timeline, total_duration)
         if warnings:
@@ -816,7 +850,11 @@ class MainWindow(QMainWindow):
             if proceed != QMessageBox.Yes:
                 return
         try:
-            result = export_project(self.project)
+            result = export_project(
+                self.project,
+                fast_forward_gaps=self.export_gap_ff_enabled,
+                gap_speed=self.export_gap_speed,
+            )
             save_project(self.project)
         except Exception as exc:
             QMessageBox.critical(self, "Export failed", str(exc))
@@ -827,6 +865,8 @@ class MainWindow(QMainWindow):
             f"Comments: {result.comments_timestamps}\n"
             f"Clips: {len(result.clips)} saved"
         )
+        if self.export_gap_ff_enabled:
+            message += f"\nGaps fast-forwarded at {self.export_gap_speed:g}x."
         if result.chapter_warnings:
             message += "\n\nChapter warnings:\n" + "\n".join(result.chapter_warnings)
         QMessageBox.information(self, "Export complete", message)
@@ -883,6 +923,32 @@ class MainWindow(QMainWindow):
             return fallback
         return 1.0 / media.fps
 
+    # Utility helpers --------------------------------------------------------
+    # Export fast-forward gaps -------------------------------------------------
+    def _toggle_gap_fast_forward(self, checked: bool | None = None) -> None:
+        if checked is None:
+            checked = not self.export_gap_ff_enabled
+        self.export_gap_ff_enabled = bool(checked)
+        self.gap_ff_button.setChecked(self.export_gap_ff_enabled)
+        self.gap_speed_spin.setEnabled(self.export_gap_ff_enabled)
+        self._sync_gap_ff_button_text()
+        status = (
+            f"Gaps will be fast-forwarded at {self.export_gap_speed:g}x in export."
+            if self.export_gap_ff_enabled
+            else "Gap fast-forward is off for export."
+        )
+        self.statusBar().showMessage(status, 2500)
+
+    def _on_gap_speed_changed(self, value: float) -> None:
+        self.export_gap_speed = max(1.0, float(value))
+        self._sync_gap_ff_button_text()
+
+    def _sync_gap_ff_button_text(self) -> None:
+        state = "ON" if self.export_gap_ff_enabled else "OFF"
+        self.gap_ff_button.setText(
+            f"Fast-forward gaps (export): {state}  ({self.export_gap_speed:g}x)"
+        )
+
     def _refresh_instructions(self) -> None:
         self.instructions_label.setText(self._instructions_text())
 
@@ -895,6 +961,7 @@ class MainWindow(QMainWindow):
             f"- New/Open project: {key('new_project', 'Ctrl+N')} / {key('open_project', 'Ctrl+O')}",
             f"- Import videos: {key('import_videos', 'Ctrl+I')} (drag to reorder in the list)",
             f"- Play/Pause: {key('play_pause', 'Space')} • Mute: {key('mute_audio', 'M')}",
+            "- Export fast-forward: button under the video to include gaps at a faster speed in highlights.",
             f"- Scrub: {key('scrub_back', 'Left')} / {key('scrub_forward', 'Right')} "
             f"({self.scrub_config.get('seconds_step', 1.0)}s)",
             f"- Frame step: {key('scrub_frame_back', 'Shift+Left')} / {key('scrub_frame_forward', 'Shift+Right')} "
