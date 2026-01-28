@@ -7,18 +7,18 @@ Desktop app for reviewing fencing bouts: import videos, mark segments, add notes
 - Score tracker window (always on top): log Point Left/Right/No Point, optionally auto-increment scores, and drop timestamped comments at the playhead.
 - Per-segment playback speed: set slow/fast motion when editing or duplicating segments; speeds carry through to exported clips and stitched highlights.
 
-## Instructions for use
+## Instructions
 ![Bout Review screenshot](images/image.jpeg)
 - Launch the app.
-- Create/open a project: click *New Project* or *Open Project*, and create a folder where you want the output files to be.
--Import videos: Select *Import Videos* and choose files. (If you have multiple videos, drag to reorder them in the display).
-- Play: select a video; **spacebar** = play/pause, **M** = mute toggle.**Left/Right** arrows scrub seconds; **Shift+Left/Right** step frames.
-- Mark segments: To Mark the action, at the start use **I** (Mark In), at end press **O** (Mark Out). Segments appear in the list; double-click to jump.
-- [Optional] Edit/duplicate segments: select a segment > Edit segment (start/end/label/speed) or Duplicate segment.
-- [Optional] notes: move playhead → Add Comment or Add Chapter; double-click a note to edit timestamp/type/text.
-- [Optional] Score tracker: toolbar → Score Tracker (stays on top). Use Point Left/Right/No Point; with “Enable Score” checked, scores auto-increment and get appended to the comment. You can manually adjust the score boxes anytime.
-- Export: click *Export*. Outputs go to exports/: `highlights.mp4` (`/clips/` contain individual segments, chapters and notes found in `youtube_chapters.txt`, `comments_timestamps.txt`. )
-- Open exports folder: toolbar button or *Ctrl+Shift+E*.
+- **Create/open a project**: click *New Project* or *Open Project*, and create a folder where you want the output files to be.
+- **Import videos**: Select *Import Videos* and choose files. (If you have multiple videos, drag to reorder them in the display).
+- **Play**: select a video; **spacebar** = play/pause, **M** = mute toggle.**Left/Right** arrows scrub seconds; **Shift+Left/Right** step frames.
+- **Mark segments**: To Mark the action, at the start use **I** (Mark In), at end press **O** (Mark Out). Segments appear in the list; double-click to jump.
+- **[Optional] Edit/duplicate segments**: select a segment -> Edit segment (start/end/label/speed) or Duplicate segment.
+- **[Optional] notes**: move playhead -> Add Comment or Add Chapter; double-click a note to edit timestamp/type/text.
+- **[Optional] Score tracker**: toolbar -> Score Tracker (stays on top). Use *Point Left/Right/No Point*; with "*Enable Score*" checked, scores auto-increment and get appended to the comment. You can manually adjust the score boxes anytime.
+- **Export**: click *Export*. Outputs go to exports/: `highlights.mp4` (`/clips/` contain individual segments, chapters and notes found in `youtube_chapters.txt`, `comments_timestamps.txt`. )
+- **Open exports folder**: toolbar button or *Ctrl+Shift+E*.
 
 ## How To Install
 Go to the releases page [https://github.com/CarlHentges/Bout-Review/releases](https://github.com/CarlHentges/Bout-Review/releases)
@@ -63,7 +63,6 @@ pyinstaller BoutReview.spec
 dist/Bout Review.app
 ```
 
-4) Share with friends:
 ```bash
 ditto -c -k --sequesterRsrc --keepParent "dist/Bout Review.app" "Bout Review.zip"
 ```
