@@ -1,6 +1,5 @@
 # Bout Review
-
-![Bout Review icon](src/bout_review/assets/bout_review_icon.png)
+<img src="src/bout_review/assets/bout_review_icon.png" alt="Bout Review icon" width="300">
 
 Desktop app for reviewing fencing bouts: import videos, mark segments, add notes, and export highlights + chapter timestamps.
 
