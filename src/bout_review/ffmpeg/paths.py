@@ -86,7 +86,9 @@ def _bundled_binary(name: str) -> Path | None:
             candidates.extend(exe_variants)
         for candidate in candidates:
             if candidate.exists():
-                if _should_copy(candidate):
+                # On Windows, prefer copying to a user-writable location to avoid MOTW/AV blocks.
+                force_copy = sys.platform == "win32"
+                if force_copy or _should_copy(candidate):
                     try:
                         copied = _ensure_executable_copy(candidate, candidate.name)
                         debug_print(f"Using copied bundled binary for {name}: {copied}")
@@ -106,7 +108,7 @@ def get_ffmpeg_path() -> Path:
     if bundled:
         return bundled
     path = Path(imageio_ffmpeg.get_ffmpeg_exe())
-    if getattr(sys, "frozen", False) and _should_copy(path):
+    if getattr(sys, "frozen", False) and (sys.platform == "win32" or _should_copy(path)):
         copied = _ensure_executable_copy(path, path.name)
         return copied
     debug_print(f"Resolved ffmpeg path: {path}")
