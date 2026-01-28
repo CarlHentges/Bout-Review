@@ -20,16 +20,28 @@ def _is_in_app_bundle(path: Path) -> bool:
     return "Contents" in parts and "Applications" in parts
 
 
-def _ensure_executable_copy(src: Path, name: str) -> Path:
+def _ensure_executable_copy(src: Path, name: str | None = None) -> Path:
     if not src.exists():
         raise FileNotFoundError(src)
+    dest_name = name or src.name
     dest_dir = _user_bin_dir()
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / name
+    dest = dest_dir / dest_name
     try:
         if not dest.exists() or src.stat().st_mtime > dest.stat().st_mtime:
             shutil.copy2(src, dest)
         dest.chmod(0o755)
+        if sys.platform == "win32":
+            # Remove MOTW if present so Windows doesn't block execution.
+            try:
+                subprocess.run(
+                    ["powershell", "-Command", f'Unblock-File -Path "{dest}"'],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception:
+                pass
         if sys.platform == "darwin":
             subprocess.run(
                 ["xattr", "-dr", "com.apple.quarantine", str(dest)],
@@ -76,7 +88,7 @@ def _bundled_binary(name: str) -> Path | None:
             if candidate.exists():
                 if _should_copy(candidate):
                     try:
-                        copied = _ensure_executable_copy(candidate, name)
+                        copied = _ensure_executable_copy(candidate, candidate.name)
                         debug_print(f"Using copied bundled binary for {name}: {copied}")
                         return copied
                     except OSError:
@@ -95,7 +107,7 @@ def get_ffmpeg_path() -> Path:
         return bundled
     path = Path(imageio_ffmpeg.get_ffmpeg_exe())
     if getattr(sys, "frozen", False) and _should_copy(path):
-        copied = _ensure_executable_copy(path, "ffmpeg")
+        copied = _ensure_executable_copy(path, path.name)
         return copied
     debug_print(f"Resolved ffmpeg path: {path}")
     return path
