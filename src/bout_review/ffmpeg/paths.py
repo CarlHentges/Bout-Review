@@ -11,6 +11,18 @@ from ..utils.debug import debug_print
 from ..utils.config import config_path
 
 
+def _no_window_kwargs() -> dict:
+    """On Windows, suppress visible consoles for helper subprocesses."""
+    if sys.platform == "win32":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        return {
+            "creationflags": subprocess.CREATE_NO_WINDOW,
+            "startupinfo": startupinfo,
+        }
+    return {}
+
+
 def _user_bin_dir() -> Path:
     return config_path().parent / "bin"
 
@@ -39,6 +51,7 @@ def _ensure_executable_copy(src: Path, name: str | None = None) -> Path:
                     check=False,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    **_no_window_kwargs(),
                 )
             except Exception:
                 pass

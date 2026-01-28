@@ -5,6 +5,9 @@ import subprocess
 import tempfile
 
 import imageio_ffmpeg
+import importlib.util
+import sys
+import sysconfig
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 
@@ -114,7 +117,23 @@ binaries = [(str(ffmpeg_path), "ffmpeg")]
 if ffprobe_path.exists():
     binaries.append((str(ffprobe_path), "ffprobe"))
 hiddenimports = collect_submodules("imageio_ffmpeg")
+# Ensure core stdlib extension modules are available in the frozen app.
+core_exts = ["_struct", "zlib", "binascii", "math", "_random", "_hashlib", "_blake2", "_sha3"]
+hiddenimports += core_exts
 
+# Explicitly bundle their binaries inside lib-dynload in the app.
+ver = f"{sys.version_info.major}.{sys.version_info.minor}"
+dynload_dir = Path(sys.executable).resolve().parent.parent / "lib" / f"python{ver}" / "lib-dynload"
+for modname in core_exts:
+    spec = importlib.util.find_spec(modname)
+    if spec and spec.origin:
+        binaries.append((str(Path(spec.origin)), f"python{ver}/lib-dynload"))
+
+# Also bundle every file from lib-dynload as binaries to be safe.
+if dynload_dir.exists():
+    for item in dynload_dir.iterdir():
+        if item.is_file():
+            binaries.append((str(item), f"python{ver}/lib-dynload"))
 
 block_cipher = None
 

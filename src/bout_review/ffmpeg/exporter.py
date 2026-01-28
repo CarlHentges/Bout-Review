@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Callable, Optional
 import sys
 
 from .paths import get_ffmpeg_path
@@ -367,9 +367,16 @@ def _comment_lines(project: Project, timeline: List[Tuple[ExportSlice, float, fl
     return lines
 
 
-def export_project(project: Project, fast_forward_gaps: bool = False, gap_speed: float = 3.0) -> ExportResult:
+def export_project(
+    project: Project,
+    fast_forward_gaps: bool = False,
+    gap_speed: float = 3.0,
+    slices: Optional[List[ExportSlice]] = None,
+    progress_cb: Optional[Callable[[int, str], None]] = None,
+    cancel_cb: Optional[Callable[[], bool]] = None,
+) -> ExportResult:
     ordered_segments = _ordered_segments(project)
-    if not ordered_segments:
+    if not ordered_segments and not slices:
         raise ValueError("No segments to export. Mark keep ranges before exporting.")
     gap_speed = max(1.0, float(gap_speed))
     media_lookup: Dict[str, str] = {m.id: m.filename for m in project.medias}
@@ -378,7 +385,10 @@ def export_project(project: Project, fast_forward_gaps: bool = False, gap_speed:
         for m in project.medias
     }
 
-    slices = export_slices(project, include_gaps=fast_forward_gaps, gap_speed=gap_speed)
+    if slices is None:
+        slices = export_slices(project, include_gaps=fast_forward_gaps, gap_speed=gap_speed)
+    total_steps = len(slices) + 2  # clips + concat + text
+    done = 0
 
     ffmpeg = get_ffmpeg_path()
     project.exports_dir.mkdir(parents=True, exist_ok=True)
@@ -399,6 +409,8 @@ def export_project(project: Project, fast_forward_gaps: bool = False, gap_speed:
     clip_paths: List[Path] = []
     gap_count = 0
     for idx, slc in enumerate(slices, start=1):
+        if cancel_cb and cancel_cb():
+            raise RuntimeError("Export cancelled")
         if slc.end <= slc.start:
             raise ValueError(f"Slice {idx} has non-positive duration.")
         filename = media_lookup.get(slc.media_id)
@@ -425,9 +437,17 @@ def export_project(project: Project, fast_forward_gaps: bool = False, gap_speed:
             log_path=log_path,
         )
         clip_paths.append(clip)
+        done += 1
+        if progress_cb:
+            progress_cb(done, f"Clip {idx}/{len(slices)}")
 
     highlights_path = project.exports_dir / "highlights.mp4"
+    if cancel_cb and cancel_cb():
+        raise RuntimeError("Export cancelled")
     _concat_highlight(ffmpeg, clip_paths, highlights_path, log_path)
+    done += 1
+    if progress_cb:
+        progress_cb(done, "Stitching highlights")
 
     timeline = build_timeline(slices)
     total_duration = timeline[-1][2] if timeline else 0.0
@@ -437,11 +457,16 @@ def export_project(project: Project, fast_forward_gaps: bool = False, gap_speed:
     _write_text(chapters_path, chapter_lines)
 
     comments_path = project.exports_dir / "comments_timestamps.txt"
+    if cancel_cb and cancel_cb():
+        raise RuntimeError("Export cancelled")
     comment_lines = _comment_lines(project, timeline)
     if comment_lines:
         _write_text(comments_path, comment_lines)
     else:
         comments_path.touch(exist_ok=True)
+    done += 1
+    if progress_cb:
+        progress_cb(done, "Writing metadata")
 
     return ExportResult(
         highlights=highlights_path,

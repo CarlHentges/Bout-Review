@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtCore import Qt, QTimer, QUrl, QObject, Signal, QThread
 from PySide6.QtGui import QAction, QDesktopServices, QIcon
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QSizePolicy,
     QStatusBar,
@@ -38,6 +39,7 @@ from ..ffmpeg.exporter import (
     chapter_lines_with_warnings,
     export_project,
     export_slices,
+    ExportResult,
 )
 from ..utils.config import load_config
 from ..utils.timecode import to_timestamp
@@ -159,6 +161,38 @@ class NoteDialog(QDialog):
         )
 
 
+class ExportWorker(QObject):
+    progress = Signal(int, str)
+    finished = Signal(ExportResult)
+    error = Signal(str)
+
+    def __init__(self, project: Project, slices: list, fast_forward: bool, gap_speed: float) -> None:
+        super().__init__()
+        self.project = project
+        self.slices = slices
+        self.fast_forward = fast_forward
+        self.gap_speed = gap_speed
+
+    def run(self) -> None:
+        try:
+            total_steps = len(self.slices) + 2  # clips + concat + text files
+
+            def cb(done: int, msg: str) -> None:
+                self.progress.emit(done, msg)
+
+            result = export_project(
+                self.project,
+                fast_forward_gaps=self.fast_forward,
+                gap_speed=self.gap_speed,
+                slices=self.slices,
+                progress_cb=cb,
+                cancel_cb=lambda: self.thread().isInterruptionRequested(),
+            )
+            self.finished.emit(result)
+        except Exception as exc:  # noqa: BLE001
+            self.error.emit(str(exc))
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -181,6 +215,10 @@ class MainWindow(QMainWindow):
             self.export_config.get("fast_forward_gaps_enabled", False)
         )
         self.export_gap_speed: float = max(1.0, float(self.export_config.get("gap_speed", 3.0)))
+        self._export_thread: QThread | None = None
+        self._export_worker: ExportWorker | None = None
+        self._export_progress: QProgressDialog | None = None
+        self._export_total_steps: int = 0
 
         self.player = QMediaPlayer(self)
         self.audio = QAudioOutput(self)
@@ -217,6 +255,8 @@ class MainWindow(QMainWindow):
         self.video_list.setDragDropMode(QAbstractItemView.InternalMove)
         self.video_list.setDefaultDropAction(Qt.MoveAction)
         self.video_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.remove_video_button = QPushButton("Remove video")
+        self.remove_video_button.clicked.connect(self._remove_video)
         self.segment_list = QListWidget()
         self.notes_list = QListWidget()
         self.import_button = QPushButton("Import videos")
@@ -252,6 +292,7 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout()
         left_layout.addWidget(QLabel("Videos"))
         left_layout.addWidget(self.video_list)
+        left_layout.addWidget(self.remove_video_button)
         left_layout.addWidget(self.import_button)
         left_layout.addWidget(self.segment_label)
         left_layout.addWidget(self.mark_in_indicator)
@@ -574,6 +615,47 @@ class MainWindow(QMainWindow):
         seg_id = item.data(Qt.UserRole)
         return next((s for s in self.project.segments if s.id == seg_id), None)
 
+    def _selected_media(self):
+        if not self.project:
+            return None
+        item = self.video_list.currentItem()
+        if not item:
+            return None
+        media_id = item.data(Qt.UserRole)
+        return next((m for m in self.project.medias if m.id == media_id), None)
+
+    def _remove_video(self) -> None:
+        media = self._selected_media()
+        if not media or not self.project:
+            QMessageBox.information(self, "No video", "Select a video to remove.")
+            return
+        confirm = QMessageBox.question(
+            self,
+            "Remove video",
+            "Remove this video from the project? All segments and notes tied to it will be deleted.",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        # Remove segments and notes tied to this media
+        self.project.segments = [s for s in self.project.segments if s.media_id != media.id]
+        self.project.notes = [n for n in self.project.notes if n.media_id != media.id]
+        # Remove media entry
+        self.project.medias = [m for m in self.project.medias if m.id != media.id]
+        # Delete the file if present
+        try:
+            path = self.project.videos_dir / media.filename
+            if path.exists():
+                path.unlink()
+        except OSError:
+            pass
+        self.current_media_id = None
+        save_project(self.project)
+        self._refresh_video_list()
+        self._refresh_segments()
+        self._refresh_notes()
+        self.statusBar().showMessage("Video removed", 2000)
+
     def _seek_to(self, seconds: float) -> None:
         duration_ms = self.player.duration()
         target_ms = int(max(0.0, seconds) * 1000)
@@ -849,27 +931,30 @@ class MainWindow(QMainWindow):
             )
             if proceed != QMessageBox.Yes:
                 return
-        try:
-            result = export_project(
-                self.project,
-                fast_forward_gaps=self.export_gap_ff_enabled,
-                gap_speed=self.export_gap_speed,
-            )
-            save_project(self.project)
-        except Exception as exc:
-            QMessageBox.critical(self, "Export failed", str(exc))
-            return
-        message = (
-            f"Highlights: {result.highlights}\n"
-            f"Chapters: {result.youtube_chapters}\n"
-            f"Comments: {result.comments_timestamps}\n"
-            f"Clips: {len(result.clips)} saved"
+        self._export_total_steps = len(slices) + 2
+        progress = QProgressDialog("Exporting...", "Cancel", 0, self._export_total_steps, self)
+        progress.setWindowModality(Qt.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        self._export_progress = progress
+
+        thread = QThread(self)
+        worker = ExportWorker(
+            self.project,
+            slices,
+            self.export_gap_ff_enabled,
+            self.export_gap_speed,
         )
-        if self.export_gap_ff_enabled:
-            message += f"\nGaps fast-forwarded at {self.export_gap_speed:g}x."
-        if result.chapter_warnings:
-            message += "\n\nChapter warnings:\n" + "\n".join(result.chapter_warnings)
-        QMessageBox.information(self, "Export complete", message)
+        self._export_thread = thread
+        self._export_worker = worker
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run, Qt.QueuedConnection)
+        worker.progress.connect(self._on_export_progress, Qt.QueuedConnection)
+        worker.finished.connect(self._on_export_finished, Qt.QueuedConnection)
+        worker.error.connect(self._on_export_error, Qt.QueuedConnection)
+        progress.canceled.connect(lambda: thread.requestInterruption())
+        thread.start()
 
     # Lists --------------------------------------------------------------------
     def _refresh_video_list(self) -> None:
@@ -974,6 +1059,47 @@ class MainWindow(QMainWindow):
             f"- Export: {key('export', 'Ctrl+E')}",
         ]
         return "\n".join(lines)
+
+    # Export callbacks --------------------------------------------------------
+    def _cleanup_export_worker(self) -> None:
+        if self._export_progress:
+            self._export_progress.close()
+        if self._export_thread:
+            self._export_thread.quit()
+            self._export_thread.wait()
+        self._export_thread = None
+        self._export_worker = None
+        self._export_progress = None
+
+    def _on_export_progress(self, done: int, msg: str) -> None:
+        if not self._export_progress:
+            return
+        self._export_progress.setMaximum(self._export_total_steps)
+        self._export_progress.setValue(done)
+        if msg:
+            self._export_progress.setLabelText(f"Exporting... {msg}")
+
+    def _on_export_finished(self, result: ExportResult) -> None:
+        save_project(self.project)
+        self._cleanup_export_worker()
+        message = (
+            f"Highlights: {result.highlights}\n"
+            f"Chapters: {result.youtube_chapters}\n"
+            f"Comments: {result.comments_timestamps}\n"
+            f"Clips: {len(result.clips)} saved"
+        )
+        if self.export_gap_ff_enabled:
+            message += f"\nGaps fast-forwarded at {self.export_gap_speed:g}x."
+        if result.chapter_warnings:
+            message += "\n\nChapter warnings:\n" + "\n".join(result.chapter_warnings)
+        QMessageBox.information(self, "Export complete", message)
+
+    def _on_export_error(self, err: str) -> None:
+        self._cleanup_export_worker()
+        if "cancelled" in err.lower():
+            QMessageBox.information(self, "Export cancelled", "Export was cancelled.")
+        else:
+            QMessageBox.critical(self, "Export failed", err)
 
     def _apply_hotkeys(self, action_map: dict[str, QAction]) -> None:
         for key, action in action_map.items():

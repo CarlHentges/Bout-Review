@@ -15,6 +15,8 @@ import platform
 import sys
 import zipfile
 from pathlib import Path
+import shutil
+import subprocess
 
 
 def _label_for_platform(system: str) -> str:
@@ -39,7 +41,24 @@ def _arch_slug(machine: str) -> str:
 def _zip_path(src: Path, dest_zip: Path) -> None:
     if dest_zip.exists():
         dest_zip.unlink()
-    with zipfile.ZipFile(dest_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+    # macOS bundles rely on symlinks and resource forks; use ditto to preserve them.
+    if sys.platform == "darwin":
+        subprocess.run(
+            [
+                "ditto",
+                "-c",
+                "-k",
+                "--sequesterRsrc",
+                "--keepParent",
+                str(src),
+                str(dest_zip),
+            ],
+            check=True,
+        )
+        return
+
+    # Windows/Linux: standard zip
+    with zipfile.ZipFile(dest_zip, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
         if src.is_dir():
             for file in src.rglob("*"):
                 if file.is_dir():

@@ -189,6 +189,18 @@ Mixed sources / resolution:
 
 ---
 
+## 10. Packaging gotcha (macOS zip)
+
+- Issue: Zipping the `.app` with Python’s `zipfile` stripped bundle metadata (symlinks/resource forks), so unzipped builds missed stdlib extensions (`_struct`, `_sha512`, etc.) and crashed.
+- Fix: `scripts/package_release.py` now uses `ditto -c -k --sequesterRsrc --keepParent` on macOS; Windows/Linux keep standard zip.
+- Good build steps (macOS):
+  1) `rm -rf build dist`
+  2) `pyinstaller --clean -y BoutReview.spec`
+  3) `python scripts/package_release.py`
+  4) Unzip, move `Bout Review.app` to `/Applications` (if blocked: `xattr -dr com.apple.quarantine "/Applications/Bout Review.app"`).
+
+---
+
 ## 9. Next milestones
 
 1. Project I/O

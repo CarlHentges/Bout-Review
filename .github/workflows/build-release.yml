@@ -53,3 +53,22 @@ jobs:
         with:
           name: Bout_Review_${{ matrix.label }}
           path: dist/Bout_Review_*.zip
+
+  publish:
+    name: Draft Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create draft release and upload assets
+        uses: softprops/action-gh-release@v1
+        with:
+          draft: true
+          files: artifacts/**/Bout_Review_*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
