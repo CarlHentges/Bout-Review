@@ -7,6 +7,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
+import sys
 
 from .paths import get_ffmpeg_path
 from ..core.models import Note, Project, Segment
@@ -54,6 +55,18 @@ def _log_text(log_path: Path, text: str) -> None:
 
 def _debug_enabled() -> bool:
     return os.getenv("BOUT_REVIEW_DEBUG", "").lower() in {"1", "true", "yes", "on"}
+
+
+def _no_window_kwargs() -> dict:
+    """On Windows, suppress console windows for ffmpeg child processes."""
+    if sys.platform == "win32":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        return {
+            "creationflags": subprocess.CREATE_NO_WINDOW,
+            "startupinfo": startupinfo,
+        }
+    return {}
 
 
 def _rotation_filter(rotation: int) -> str:
@@ -245,7 +258,7 @@ def _render_clip(
         "+faststart",
         str(output),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, **_no_window_kwargs())
     _log_command(log_path, cmd, result)
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg failed for clip {output.name}: {result.stderr}")
@@ -296,7 +309,7 @@ def _concat_highlight(ffmpeg: Path, clip_paths: List[Path], output: Path, log_pa
         "+faststart",
         str(output),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, **_no_window_kwargs())
     _log_command(log_path, cmd, result)
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg concat failed: {result.stderr}")

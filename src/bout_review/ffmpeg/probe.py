@@ -6,6 +6,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+import sys
 
 from .paths import get_ffmpeg_path, get_ffprobe_path
 from ..utils.debug import debug_print
@@ -16,6 +17,18 @@ class MediaMetadata:
     duration: float
     rotation: int
     fps: float | None = None
+
+
+def _no_window_kwargs() -> dict:
+    """On Windows, suppress console windows for ffprobe/ffmpeg child processes."""
+    if sys.platform == "win32":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        return {
+            "creationflags": subprocess.CREATE_NO_WINDOW,
+            "startupinfo": startupinfo,
+        }
+    return {}
 
 
 def _run_ffprobe(path: Path) -> dict:
@@ -32,7 +45,9 @@ def _run_ffprobe(path: Path) -> dict:
     ]
     debug_print(f"Running ffprobe command: {' '.join(cmd)}")
     try:
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        result = subprocess.run(
+            cmd, check=True, capture_output=True, text=True, **_no_window_kwargs()
+        )
     except FileNotFoundError as exc:
         raise RuntimeError(
             "ffprobe executable not found; set FFPROBE_PATH or ensure ffprobe is installed"
@@ -113,7 +128,7 @@ def _run_ffmpeg_probe(path: Path) -> MediaMetadata:
     ffmpeg = get_ffmpeg_path()
     cmd = [str(ffmpeg), "-hide_banner", "-i", str(path)]
     debug_print(f"Running ffmpeg fallback probe: {' '.join(cmd)}")
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, **_no_window_kwargs())
     stderr = result.stderr or ""
     if stderr:
         preview = "\n".join(stderr.splitlines()[:20])

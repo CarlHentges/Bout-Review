@@ -95,6 +95,8 @@ python scripts/package_release.py
 ```
 This zips the right folder for your platform into `dist/Bout_Review_<Platform>-<arch>.zip`.
 
+**Windows build tip:** If PyInstaller fails with `PermissionError` while removing `dist/Bout Review` (e.g., `ffmpegmediaplugin.dll` locked), close any running Bout Review instance, delete the old `dist/Bout Review` folder (or use `pyinstaller -y --clean BoutReview.spec`), then rebuild.
+
 ### Notes
 - The build bundles an FFmpeg binary from `imageio-ffmpeg` so no system FFmpeg install is needed.
 - App icon uses `src/bout_review/assets/bout_review_icon.png` at runtime.
