@@ -41,6 +41,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "frames_step": 1,
         "frame_fallback_seconds": 0.04,
     },
+    "export": {
+        # Render unselected gaps in the highlights at this speed multiplier.
+        "fast_forward_gaps_enabled": False,
+        "gap_speed": 3.0,
+    },
     "timeline": {
         "show_labels": True,
         "label_max_chars": 12,

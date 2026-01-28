@@ -25,6 +25,16 @@ class ExportResult:
     chapter_warnings: List[str]
 
 
+@dataclass
+class ExportSlice:
+    media_id: str
+    start: float
+    end: float
+    speed: float
+    label: str
+    is_gap: bool
+
+
 def _log_command(log_path: Path, cmd: List[str], result: subprocess.CompletedProcess) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as fh:
@@ -96,13 +106,13 @@ def _atempo_filters(speed: float) -> str:
     return ",".join(f"atempo={f:.6f}" for f in factors)
 
 
-def build_timeline(segments: List[Segment]) -> List[Tuple[Segment, float, float]]:
+def build_timeline(slices: List[ExportSlice]) -> List[Tuple[ExportSlice, float, float]]:
     timeline = []
     offset = 0.0
-    for seg in segments:
-        speed = max(0.001, float(getattr(seg, "speed", 1.0) or 1.0))
-        duration = max(0.0, seg.end - seg.start) / speed
-        timeline.append((seg, offset, offset + duration))
+    for slc in slices:
+        speed = max(0.001, float(getattr(slc, "speed", 1.0) or 1.0))
+        duration = max(0.0, slc.end - slc.start) / speed
+        timeline.append((slc, offset, offset + duration))
         offset += duration
     return timeline
 
@@ -122,13 +132,61 @@ def _ordered_segments(project: Project) -> List[Segment]:
     )
 
 
-def _map_to_highlight(note: Note, timeline: List[Tuple[Segment, float, float]]) -> float | None:
-    for seg, start_out, end_out in timeline:
-        if seg.media_id != note.media_id:
+def export_slices(project: Project, include_gaps: bool, gap_speed: float) -> List[ExportSlice]:
+    ordered_segments = _ordered_segments(project)
+    by_media: Dict[str, List[Segment]] = {}
+    for seg in ordered_segments:
+        by_media.setdefault(seg.media_id, []).append(seg)
+
+    slices: List[ExportSlice] = []
+    for media in project.medias:
+        duration = float(media.duration or 0.0)
+        segs = by_media.get(media.id, [])
+        cursor = 0.0
+        for seg in segs:
+            if include_gaps and seg.start > cursor:
+                slices.append(
+                    ExportSlice(
+                        media_id=media.id,
+                        start=cursor,
+                        end=seg.start,
+                        speed=gap_speed,
+                        label="Gap",
+                        is_gap=True,
+                    )
+                )
+            slices.append(
+                ExportSlice(
+                    media_id=media.id,
+                    start=seg.start,
+                    end=seg.end,
+                    speed=max(0.001, float(getattr(seg, "speed", 1.0) or 1.0)),
+                    label=seg.label or "",
+                    is_gap=False,
+                )
+            )
+            cursor = max(cursor, seg.end)
+        if include_gaps and duration > cursor:
+            slices.append(
+                ExportSlice(
+                    media_id=media.id,
+                    start=cursor,
+                    end=duration,
+                    speed=gap_speed,
+                    label="Gap",
+                    is_gap=True,
+                )
+            )
+    return slices
+
+
+def _map_to_highlight(note: Note, timeline: List[Tuple[ExportSlice, float, float]]) -> float | None:
+    for slc, start_out, end_out in timeline:
+        if slc.media_id != note.media_id:
             continue
-        if seg.start <= note.timestamp <= seg.end:
-            speed = max(0.001, float(getattr(seg, "speed", 1.0) or 1.0))
-            return start_out + (note.timestamp - seg.start) / speed
+        if slc.start <= note.timestamp <= slc.end:
+            speed = max(0.001, float(getattr(slc, "speed", 1.0) or 1.0))
+            return start_out + (note.timestamp - slc.start) / speed
     return None
 
 
@@ -251,7 +309,7 @@ def _write_text(path: Path, lines: List[str]) -> None:
 
 
 def chapter_lines_with_warnings(
-    project: Project, timeline: List[Tuple[Segment, float, float]], total_duration: float
+    project: Project, timeline: List[Tuple[ExportSlice, float, float]], total_duration: float
 ) -> tuple[List[str], List[str]]:
     chapters: List[Tuple[float, str]] = []
     warnings: List[str] = []
@@ -284,7 +342,7 @@ def chapter_lines_with_warnings(
     return [f"{to_timestamp(ts)} {label}" for ts, label in chapters], warnings
 
 
-def _comment_lines(project: Project, timeline: List[Tuple[Segment, float, float]]) -> List[str]:
+def _comment_lines(project: Project, timeline: List[Tuple[ExportSlice, float, float]]) -> List[str]:
     lines: List[str] = []
     for note in project.notes:
         if note.type != "comment":
@@ -296,15 +354,18 @@ def _comment_lines(project: Project, timeline: List[Tuple[Segment, float, float]
     return lines
 
 
-def export_project(project: Project) -> ExportResult:
+def export_project(project: Project, fast_forward_gaps: bool = False, gap_speed: float = 3.0) -> ExportResult:
     ordered_segments = _ordered_segments(project)
     if not ordered_segments:
         raise ValueError("No segments to export. Mark keep ranges before exporting.")
+    gap_speed = max(1.0, float(gap_speed))
     media_lookup: Dict[str, str] = {m.id: m.filename for m in project.medias}
     rotation_lookup: Dict[str, int] = {
         m.id: m.rotation_override if m.rotation_override is not None else m.rotation_probe
         for m in project.medias
     }
+
+    slices = export_slices(project, include_gaps=fast_forward_gaps, gap_speed=gap_speed)
 
     ffmpeg = get_ffmpeg_path()
     project.exports_dir.mkdir(parents=True, exist_ok=True)
@@ -315,33 +376,38 @@ def export_project(project: Project) -> ExportResult:
     if _debug_enabled():
         _log_text(
             log_path,
-            "[segments]"
+            "[slices]"
             + " | ".join(
-                f"{idx}:{s.label or s.id[:5]} media={s.media_id[:6]} start={s.start:.3f} end={s.end:.3f} speed={getattr(s, 'speed', 1.0)}"
-                for idx, s in enumerate(ordered_segments, start=1)
+                f"{idx}:{'gap' if slc.is_gap else (slc.label or 'seg')} media={slc.media_id[:6]} start={slc.start:.3f} end={slc.end:.3f} speed={slc.speed}"
+                for idx, slc in enumerate(slices, start=1)
             ),
         )
 
     clip_paths: List[Path] = []
-    for idx, segment in enumerate(ordered_segments, start=1):
-        if segment.end <= segment.start:
-            raise ValueError(f"Segment {segment.id} has non-positive duration.")
-        filename = media_lookup.get(segment.media_id)
+    gap_count = 0
+    for idx, slc in enumerate(slices, start=1):
+        if slc.end <= slc.start:
+            raise ValueError(f"Slice {idx} has non-positive duration.")
+        filename = media_lookup.get(slc.media_id)
         if not filename:
-            raise ValueError(f"Segment {segment.id} references missing media {segment.media_id}")
+            raise ValueError(f"Slice {idx} references missing media {slc.media_id}")
         src = project.videos_dir / filename
         if not src.exists():
             raise FileNotFoundError(f"Media file missing: {src}")
-        label = _safe_label(segment.label, f"E{idx}")
+        if slc.is_gap:
+            gap_count += 1
+            label = _safe_label(f"gap_{gap_count}", f"GAP{gap_count}")
+        else:
+            label = _safe_label(slc.label, f"E{idx}")
         dest = project.clips_dir / f"{label}.mp4"
-        rotation = rotation_lookup.get(segment.media_id, 0)
+        rotation = rotation_lookup.get(slc.media_id, 0)
         clip = _render_clip(
             ffmpeg=ffmpeg,
             source=src,
-            start=segment.start,
-            end=segment.end,
+            start=slc.start,
+            end=slc.end,
             rotation=rotation,
-            speed=max(0.05, float(getattr(segment, "speed", 1.0) or 1.0)),
+            speed=max(0.05, float(getattr(slc, "speed", 1.0) or 1.0)),
             output=dest,
             log_path=log_path,
         )
@@ -350,7 +416,7 @@ def export_project(project: Project) -> ExportResult:
     highlights_path = project.exports_dir / "highlights.mp4"
     _concat_highlight(ffmpeg, clip_paths, highlights_path, log_path)
 
-    timeline = build_timeline(ordered_segments)
+    timeline = build_timeline(slices)
     total_duration = timeline[-1][2] if timeline else 0.0
 
     chapters_path = project.exports_dir / "youtube_chapters.txt"
