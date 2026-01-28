@@ -62,6 +62,16 @@ def _bundled_binary(name: str) -> Path | None:
         # macOS .app layout: Contents/MacOS (exe) and Contents/Resources (data)
         candidates.append(exe_dir.parent / "Resources" / name)
         candidates.append(exe_dir.parent / "Frameworks" / name)
+        # Some PyInstaller layouts place binaries in a subfolder matching the dest name.
+        candidates.append(exe_dir / "ffmpeg" / name)
+        candidates.append(exe_dir.parent / "Resources" / "ffmpeg" / name)
+        if sys.platform == "win32":
+            # Try .exe variants explicitly
+            exe_variants = []
+            for cand in list(candidates):
+                if cand.suffix.lower() != ".exe":
+                    exe_variants.append(cand.with_suffix(".exe"))
+            candidates.extend(exe_variants)
         for candidate in candidates:
             if candidate.exists():
                 if _should_copy(candidate):
