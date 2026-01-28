@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import tempfile
@@ -33,6 +34,16 @@ def _log_command(log_path: Path, cmd: List[str], result: subprocess.CompletedPro
         if result.stderr:
             fh.write(result.stderr)
         fh.write("\n")
+
+
+def _log_text(log_path: Path, text: str) -> None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as fh:
+        fh.write(text.rstrip() + "\n")
+
+
+def _debug_enabled() -> bool:
+    return os.getenv("BOUT_REVIEW_DEBUG", "").lower() in {"1", "true", "yes", "on"}
 
 
 def _rotation_filter(rotation: int) -> str:
@@ -137,6 +148,12 @@ def _render_clip(
     effective_duration = duration / speed if speed > 0 else duration
     vf = _build_vf(rotation, speed)
     atempo_chain = _atempo_filters(speed)
+    if _debug_enabled():
+        _log_text(
+            log_path,
+            f"[clip] src={source.name} start={start:.3f}s end={end:.3f}s dur={duration:.3f}s "
+            f"speed={speed:.3f} effective_dur={effective_duration:.3f}s vf='{vf}' af='{atempo_chain or 'none'}'",
+        )
     cmd = [
         str(ffmpeg),
         "-y",
@@ -156,10 +173,16 @@ def _render_clip(
         "20",
         "-c:a",
         "aac",
+        "-fflags",
+        "+genpts",
     ]
     if atempo_chain:
         cmd += ["-af", atempo_chain]
     cmd += [
+        "-reset_timestamps",
+        "1",
+        "-avoid_negative_ts",
+        "1",
         "-movflags",
         "+faststart",
         str(output),
@@ -172,20 +195,33 @@ def _render_clip(
 
 
 def _concat_highlight(ffmpeg: Path, clip_paths: List[Path], output: Path, log_path: Path) -> Path:
-    with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as tmp:
-        for clip in clip_paths:
-            safe_path = clip.as_posix().replace("'", "'\\''")
-            tmp.write(f"file '{safe_path}'\n")
-        list_path = Path(tmp.name)
+    if _debug_enabled():
+        _log_text(
+            log_path,
+            "[concat] clips="
+            + ", ".join(f"{clip.name}" for clip in clip_paths),
+        )
+    input_args: List[str] = []
+    filter_parts: List[str] = []
+    for idx, clip in enumerate(clip_paths):
+        input_args += ["-i", str(clip)]
+        filter_parts.append(f"[{idx}:v]setpts=PTS-STARTPTS[v{idx}]")
+        filter_parts.append(f"[{idx}:a]asetpts=PTS-STARTPTS[a{idx}]")
+    concat_inputs = "".join(f"[v{idx}][a{idx}]" for idx in range(len(clip_paths)))
+    filter_parts.append(f"{concat_inputs}concat=n={len(clip_paths)}:v=1:a=1[v][a]")
+    filter_complex = ";".join(filter_parts)
     cmd = [
         str(ffmpeg),
         "-y",
-        "-f",
-        "concat",
-        "-safe",
-        "0",
-        "-i",
-        str(list_path),
+        "-fflags",
+        "+genpts",
+        *input_args,
+        "-filter_complex",
+        filter_complex,
+        "-map",
+        "[v]",
+        "-map",
+        "[a]",
         "-c:v",
         "libx264",
         "-preset",
@@ -194,13 +230,16 @@ def _concat_highlight(ffmpeg: Path, clip_paths: List[Path], output: Path, log_pa
         "20",
         "-c:a",
         "aac",
+        "-r",
+        "60",
+        "-fps_mode",
+        "cfr",
         "-movflags",
         "+faststart",
         str(output),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     _log_command(log_path, cmd, result)
-    list_path.unlink(missing_ok=True)
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg concat failed: {result.stderr}")
     return output
@@ -272,6 +311,16 @@ def export_project(project: Project) -> ExportResult:
     project.clips_dir.mkdir(parents=True, exist_ok=True)
     project.logs_dir.mkdir(parents=True, exist_ok=True)
     log_path = project.logs_dir / "ffmpeg_export.log"
+
+    if _debug_enabled():
+        _log_text(
+            log_path,
+            "[segments]"
+            + " | ".join(
+                f"{idx}:{s.label or s.id[:5]} media={s.media_id[:6]} start={s.start:.3f} end={s.end:.3f} speed={getattr(s, 'speed', 1.0)}"
+                for idx, s in enumerate(ordered_segments, start=1)
+            ),
+        )
 
     clip_paths: List[Path] = []
     for idx, segment in enumerate(ordered_segments, start=1):
