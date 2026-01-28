@@ -30,9 +30,12 @@ Desktop app for reviewing fencing bouts: import videos, mark segments, add notes
 Go to the releases page [https://github.com/CarlHentges/Bout-Review/releases](https://github.com/CarlHentges/Bout-Review/releases)
 
 ### Mac
-1) Download the  `Bout_Review_Mac.zip` file.
-2) Extract the file, now you can place the application where you like, for instance the applications folder. 
-3) The app may be blocked from opening at first, if this happens go to *Settings > Privacy & Security* scroll down until you see the option to run anyway. It should run fine after this.
+- Apple Silicon (M1/M2/M3): download `Bout_Review_Mac-arm64.zip`
+- Intel Macs: download `Bout_Review_Mac-x64.zip`
+
+After downloading:
+1) Extract the zip and move “Bout Review.app” wherever you like (e.g., Applications).
+2) If macOS blocks it, go to *System Settings → Privacy & Security* and choose “Open Anyway”.
 
 ### Windows
 1) Download `Bout_Review_Windows-x64.zip`
