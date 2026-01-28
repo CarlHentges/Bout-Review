@@ -3,6 +3,12 @@
 
 Desktop app for reviewing fencing bouts: import videos, mark segments, add notes, and export highlights + chapter timestamps.
 
+## What's new (v1.3)
+- Export progress dialog is responsive and cancellable; cancel cleanly stops ffmpeg work.
+- Video list now has a Remove Video button that deletes the media plus its segments/notes.
+- Packaging fixes: macOS zip uses `ditto` so bundled stdlib/ext modules survive unzip; Windows binaries run without stray consoles.
+- CI now auto-builds all platforms on tags and publishes a **draft** release with attached zips.
+
 ## What's new (v1.2)
 - Timeline scrubber now jumps to any click position—no more drag-only playhead.
 - Export gap fast-forward: optional button under the video to render unselected parts at a chosen speed in the highlights output.
@@ -69,6 +75,8 @@ python scripts/package_release.py
 ```
 
 Outputs land in `dist/` as `Bout_Review_<Platform>-<arch>.zip` (e.g., `Bout_Review_Windows-x64.zip`, `Bout_Review_Linux-x64.zip`, `Bout_Review_Mac-arm64.zip`). Run the executable inside the unzipped folder for your OS.
+
+CI note: pushing a tag (`v*`) runs GitHub Actions to build all platforms and attach zips to a **draft** release automatically.
 
 ### PyInstaller
 

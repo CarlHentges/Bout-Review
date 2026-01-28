@@ -14,7 +14,7 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 spec_path = Path(globals().get("__file__", Path.cwd())).resolve()
 project_root = spec_path.parent if spec_path.is_file() else spec_path
 src_root = project_root / "src"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 
 icon_icns = src_root / "bout_review" / "assets" / "bout_review_icon.icns"
 icon_ico = src_root / "bout_review" / "assets" / "bout_review_icon.ico"
