@@ -14,8 +14,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-13
-            label: macOS
+          - os: macos-latest  # macOS 15 arm64 runner
+            label: macOS-arm64
+          - os: macos-15-intel # macOS 15 Intel runner for x64 builds
+            label: macOS-x64
           - os: ubuntu-latest
             label: Linux
           - os: windows-latest
