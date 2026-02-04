@@ -41,10 +41,11 @@ from ..ffmpeg.exporter import (
     export_slices,
     ExportResult,
 )
-from ..utils.config import load_config
+from ..utils.config import load_config, config_path
 from ..utils.timecode import to_timestamp
 from .timeline_slider import NoteMarker, SegmentMarker, TimelineSlider
 from .score_tracker import ScoreTrackerWindow
+from .strings import AURA_STEP, WARNING_MAP, note_type_label, ui_text
 
 
 class SegmentDialog(QDialog):
@@ -57,8 +58,10 @@ class SegmentDialog(QDialog):
         label: str,
         speed: float,
         max_duration: float | None,
+        gen_z_mode: bool = False,
     ) -> None:
         super().__init__(parent)
+        self.gen_z_mode = bool(gen_z_mode)
         self.setWindowTitle(title)
         self.setModal(True)
 
@@ -83,10 +86,10 @@ class SegmentDialog(QDialog):
         self.label_edit = QLineEdit(label)
 
         form = QFormLayout()
-        form.addRow("Start (s)", self.start_spin)
-        form.addRow("End (s)", self.end_spin)
-        form.addRow("Label", self.label_edit)
-        form.addRow("Speed", self.speed_spin)
+        form.addRow(ui_text(self.gen_z_mode, "segment_form_start"), self.start_spin)
+        form.addRow(ui_text(self.gen_z_mode, "segment_form_end"), self.end_spin)
+        form.addRow(ui_text(self.gen_z_mode, "segment_form_label"), self.label_edit)
+        form.addRow(ui_text(self.gen_z_mode, "segment_form_speed"), self.speed_spin)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -99,7 +102,11 @@ class SegmentDialog(QDialog):
 
     def accept(self) -> None:
         if self.end_spin.value() <= self.start_spin.value():
-            QMessageBox.warning(self, "Invalid segment", "End must be after start.")
+            QMessageBox.warning(
+                self,
+                ui_text(self.gen_z_mode, "dialog_invalid_segment_title"),
+                ui_text(self.gen_z_mode, "dialog_invalid_segment_msg"),
+            )
             return
         super().accept()
 
@@ -120,8 +127,10 @@ class NoteDialog(QDialog):
         timestamp: float,
         note_type: str,
         text: str,
+        gen_z_mode: bool = False,
     ) -> None:
         super().__init__(parent)
+        self.gen_z_mode = bool(gen_z_mode)
         self.setWindowTitle(title)
         self.setModal(True)
 
@@ -132,17 +141,18 @@ class NoteDialog(QDialog):
         self.time_spin.setValue(max(0.0, timestamp))
 
         self.type_combo = QComboBox()
-        self.type_combo.addItems(["comment", "chapter"])
-        idx = self.type_combo.findText(note_type)
+        self.type_combo.addItem(ui_text(self.gen_z_mode, "note_type_comment"), "comment")
+        self.type_combo.addItem(ui_text(self.gen_z_mode, "note_type_chapter"), "chapter")
+        idx = self.type_combo.findData(note_type)
         if idx >= 0:
             self.type_combo.setCurrentIndex(idx)
 
         self.text_edit = QLineEdit(text)
 
         form = QFormLayout()
-        form.addRow("Timestamp (s)", self.time_spin)
-        form.addRow("Type", self.type_combo)
-        form.addRow("Text", self.text_edit)
+        form.addRow(ui_text(self.gen_z_mode, "note_form_timestamp"), self.time_spin)
+        form.addRow(ui_text(self.gen_z_mode, "note_form_type"), self.type_combo)
+        form.addRow(ui_text(self.gen_z_mode, "note_form_text"), self.text_edit)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -154,9 +164,12 @@ class NoteDialog(QDialog):
         self.setLayout(layout)
 
     def values(self) -> tuple[float, str, str]:
+        note_type = self.type_combo.currentData()
+        if note_type is None:
+            note_type = self.type_combo.currentText()
         return (
             float(self.time_spin.value()),
-            self.type_combo.currentText(),
+            note_type,
             self.text_edit.text().strip(),
         )
 
@@ -196,10 +209,11 @@ class ExportWorker(QObject):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Bout Review")
-        self.resize(1100, 720)
-
         self.config = load_config()
+        self.gen_z_mode = bool(self.config.get("gen_z_mode", False))
+        self.score_step = AURA_STEP if self.gen_z_mode else 1
+        self.setWindowTitle(ui_text(self.gen_z_mode, "window_title"))
+        self.resize(1100, 720)
         self.hotkeys = self.config.get("hotkeys", {})
         self.colors = self.config.get("colors", {})
         self.timeline_config = self.config.get("timeline", {})
@@ -255,25 +269,25 @@ class MainWindow(QMainWindow):
         self.video_list.setDragDropMode(QAbstractItemView.InternalMove)
         self.video_list.setDefaultDropAction(Qt.MoveAction)
         self.video_list.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.remove_video_button = QPushButton("Remove video")
+        self.remove_video_button = QPushButton(self._t("button_remove_video"))
         self.remove_video_button.clicked.connect(self._remove_video)
         self.segment_list = QListWidget()
         self.notes_list = QListWidget()
-        self.import_button = QPushButton("Import videos")
+        self.import_button = QPushButton(self._t("button_import_videos"))
         self.import_button.clicked.connect(self._import_videos)
         self.import_button.setEnabled(False)
-        self.segment_label = QLabel("Segments (I = Mark In, O = Mark Out)")
-        self.mark_in_indicator = QLabel("Mark In: OFF")
+        self.segment_label = QLabel(self._t("label_segments", mark_in_key="I", mark_out_key="O"))
+        self.mark_in_indicator = QLabel(self._t("mark_indicator_off"))
         self._set_mark_indicator(False)
-        self.segment_edit_button = QPushButton("Edit segment")
-        self.segment_delete_button = QPushButton("Delete segment")
-        self.segment_duplicate_button = QPushButton("Duplicate segment")
+        self.segment_edit_button = QPushButton(self._t("button_edit_segment"))
+        self.segment_delete_button = QPushButton(self._t("button_delete_segment"))
+        self.segment_duplicate_button = QPushButton(self._t("button_duplicate_segment"))
         self.segment_edit_button.clicked.connect(self._edit_segment)
         self.segment_delete_button.clicked.connect(self._delete_segment)
         self.segment_duplicate_button.clicked.connect(self._duplicate_segment)
-        self.note_label = QLabel("Notes")
-        self.note_edit_button = QPushButton("Edit note")
-        self.note_delete_button = QPushButton("Delete note")
+        self.note_label = QLabel(self._t("label_notes"))
+        self.note_edit_button = QPushButton(self._t("button_edit_note"))
+        self.note_delete_button = QPushButton(self._t("button_delete_note"))
         self.note_edit_button.clicked.connect(self._edit_note)
         self.note_delete_button.clicked.connect(self._delete_note)
 
@@ -290,7 +304,7 @@ class MainWindow(QMainWindow):
     # UI setup -----------------------------------------------------------------
     def _build_ui(self) -> None:
         left_layout = QVBoxLayout()
-        left_layout.addWidget(QLabel("Videos"))
+        left_layout.addWidget(QLabel(self._t("label_videos")))
         left_layout.addWidget(self.video_list)
         left_layout.addWidget(self.remove_video_button)
         left_layout.addWidget(self.import_button)
@@ -315,7 +329,7 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.position_label, 0)
         gap_ff_row = QHBoxLayout()
         gap_ff_row.addWidget(self.gap_ff_button)
-        gap_ff_row.addWidget(QLabel("Gap speed (export):"))
+        gap_ff_row.addWidget(QLabel(self._t("label_gap_speed")))
         gap_ff_row.addWidget(self.gap_speed_spin)
         gap_ff_row.addStretch()
         right_layout.addLayout(gap_ff_row, 0)
@@ -334,26 +348,39 @@ class MainWindow(QMainWindow):
         toolbar = QToolBar("Main")
         self.addToolBar(toolbar)
 
-        new_action = QAction("New Project", self, triggered=self._new_project)
-        open_action = QAction("Open Project", self, triggered=self._open_project)
-        import_action = QAction("Import Videos", self, triggered=self._import_videos)
-        export_action = QAction("Export", self, triggered=self._export)
-        open_exports_action = QAction("Open Exports Folder", self, triggered=self._open_exports_folder)
-        play_action = QAction("Play/Pause", self, triggered=self._toggle_play)
-        self.mute_action = QAction("Mute Audio", self, checkable=True, triggered=self._toggle_mute)
+        new_action = QAction(self._t("action_new_project"), self, triggered=self._new_project)
+        open_action = QAction(self._t("action_open_project"), self, triggered=self._open_project)
+        import_action = QAction(self._t("action_import_videos"), self, triggered=self._import_videos)
+        export_action = QAction(self._t("action_export"), self, triggered=self._export)
+        open_exports_action = QAction(
+            self._t("action_open_exports"), self, triggered=self._open_exports_folder
+        )
+        open_config_action = QAction(self._t("action_open_config"), self, triggered=self._open_config_file)
+        play_action = QAction(self._t("action_play_pause"), self, triggered=self._toggle_play)
+        self.mute_action = QAction(
+            self._t("action_mute_audio"), self, checkable=True, triggered=self._toggle_mute
+        )
         self.mute_action.setChecked(self.audio.isMuted())
-        mark_in_action = QAction("Mark In", self, triggered=self._mark_in)
-        mark_out_action = QAction("Mark Out", self, triggered=self._mark_out)
-        comment_action = QAction("Add Comment", self, triggered=lambda: self._add_note("comment"))
-        chapter_action = QAction("Add Chapter", self, triggered=lambda: self._add_note("chapter"))
-        score_action = QAction("Score Tracker", self, triggered=self._open_score_tracker)
-        scrub_back_action = QAction("Scrub Back", self, triggered=lambda: self._scrub_seconds(-1))
-        scrub_forward_action = QAction("Scrub Forward", self, triggered=lambda: self._scrub_seconds(1))
+        mark_in_action = QAction(self._t("action_mark_in"), self, triggered=self._mark_in)
+        mark_out_action = QAction(self._t("action_mark_out"), self, triggered=self._mark_out)
+        comment_action = QAction(
+            self._t("action_add_comment"), self, triggered=lambda: self._add_note("comment")
+        )
+        chapter_action = QAction(
+            self._t("action_add_chapter"), self, triggered=lambda: self._add_note("chapter")
+        )
+        score_action = QAction(self._t("action_score_tracker"), self, triggered=self._open_score_tracker)
+        scrub_back_action = QAction(
+            self._t("action_scrub_back"), self, triggered=lambda: self._scrub_seconds(-1)
+        )
+        scrub_forward_action = QAction(
+            self._t("action_scrub_forward"), self, triggered=lambda: self._scrub_seconds(1)
+        )
         scrub_frame_back_action = QAction(
-            "Step Frame Back", self, triggered=lambda: self._scrub_frames(-1)
+            self._t("action_scrub_frame_back"), self, triggered=lambda: self._scrub_frames(-1)
         )
         scrub_frame_forward_action = QAction(
-            "Step Frame Forward", self, triggered=lambda: self._scrub_frames(1)
+            self._t("action_scrub_frame_forward"), self, triggered=lambda: self._scrub_frames(1)
         )
 
         action_map = {
@@ -362,6 +389,7 @@ class MainWindow(QMainWindow):
             "import_videos": import_action,
             "export": export_action,
             "open_exports": open_exports_action,
+            "open_config": open_config_action,
             "play_pause": play_action,
             "mute_audio": self.mute_action,
             "mark_in": mark_in_action,
@@ -392,6 +420,7 @@ class MainWindow(QMainWindow):
             import_action,
             export_action,
             open_exports_action,
+            open_config_action,
             play_action,
             self.mute_action,
             mark_in_action,
@@ -415,15 +444,15 @@ class MainWindow(QMainWindow):
 
     # Project lifecycle --------------------------------------------------------
     def _new_project(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "Choose or create project folder")
+        directory = QFileDialog.getExistingDirectory(self, self._t("dialog_choose_project_dir"))
         if not directory:
             return
         base_path = Path(directory)
         if base_path.exists() and any(base_path.iterdir()):
             confirm = QMessageBox.question(
                 self,
-                "Folder not empty",
-                f"'{base_path.name}' is not empty. Create project here anyway?",
+                self._t("dialog_folder_not_empty_title"),
+                self._t("dialog_folder_not_empty_msg", name=base_path.name),
                 QMessageBox.Yes | QMessageBox.No,
             )
             if confirm != QMessageBox.Yes:
@@ -431,22 +460,24 @@ class MainWindow(QMainWindow):
         try:
             self.project = create_project(base_path)
         except Exception as exc:
-            QMessageBox.critical(self, "Create project failed", str(exc))
+            QMessageBox.critical(self, self._t("dialog_create_project_failed_title"), str(exc))
             return
-        self.statusBar().showMessage(f"Project created at {directory}", 5000)
+        self.statusBar().showMessage(
+            self._t("status_project_created", directory=directory), 5000
+        )
         self._after_project_loaded()
 
     def _open_project(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "Open project folder")
+        directory = QFileDialog.getExistingDirectory(self, self._t("dialog_open_project_dir"))
         if not directory:
             return
         base_path = Path(directory)
         try:
             self.project = load_project(base_path)
         except Exception as exc:
-            QMessageBox.critical(self, "Open project failed", str(exc))
+            QMessageBox.critical(self, self._t("dialog_open_project_failed_title"), str(exc))
             return
-        self.statusBar().showMessage(f"Project opened from {directory}", 5000)
+        self.statusBar().showMessage(self._t("status_project_opened", directory=directory), 5000)
         self._after_project_loaded()
 
     def _after_project_loaded(self) -> None:
@@ -467,11 +498,13 @@ class MainWindow(QMainWindow):
     # Video import -------------------------------------------------------------
     def _import_videos(self) -> None:
         if not self.project:
-            QMessageBox.information(self, "No project", "Create or open a project first.")
+            QMessageBox.information(
+                self, self._t("dialog_no_project_title"), self._t("dialog_no_project_msg")
+            )
             return
         files, _ = QFileDialog.getOpenFileNames(
             self,
-            "Import video files",
+            self._t("dialog_import_videos"),
             "",
             "Videos (*.mp4 *.mov *.mkv *.avi);;All files (*)",
         )
@@ -481,9 +514,11 @@ class MainWindow(QMainWindow):
             imported = import_media_files(self.project, (Path(f) for f in files))
             save_project(self.project)
         except Exception as exc:
-            QMessageBox.critical(self, "Import failed", str(exc))
+            QMessageBox.critical(self, self._t("dialog_import_failed_title"), str(exc))
             return
-        self.statusBar().showMessage(f"Imported {len(imported)} video(s)", 4000)
+        self.statusBar().showMessage(
+            self._t("status_imported_videos", count=len(imported)), 4000
+        )
         self._refresh_video_list()
         if imported and not self.current_media_id:
             self._load_media(imported[0].id)
@@ -508,7 +543,7 @@ class MainWindow(QMainWindow):
         self._set_mark_indicator(False)
         self.player.setSource(QUrl.fromLocalFile(str(path)))
         self.player.play()
-        self.statusBar().showMessage(f"Loaded {media.filename}", 3000)
+        self.statusBar().showMessage(self._t("status_loaded_media", filename=media.filename), 3000)
         self._update_timeline_markers()
 
     def _toggle_play(self) -> None:
@@ -522,7 +557,7 @@ class MainWindow(QMainWindow):
     def _toggle_mute(self, checked: bool) -> None:
         self.audio.setMuted(checked)
         self._sync_mute_action_text()
-        status = "Audio muted" if checked else "Audio unmuted"
+        status = self._t("status_audio_muted") if checked else self._t("status_audio_unmuted")
         self.statusBar().showMessage(status, 2000)
 
     def _on_position_changed(self, pos_ms: int) -> None:
@@ -565,10 +600,16 @@ class MainWindow(QMainWindow):
 
     def _require_media(self) -> bool:
         if not self.project:
-            QMessageBox.information(self, "No project", "Open or create a project first.")
+            QMessageBox.information(
+                self,
+                self._t("dialog_no_project_title"),
+                self._t("dialog_no_project_msg_alt"),
+            )
             return False
         if not self.current_media_id:
-            QMessageBox.information(self, "No video", "Import and select a video to continue.")
+            QMessageBox.information(
+                self, self._t("dialog_no_video_title"), self._t("dialog_no_video_msg")
+            )
             return False
         return True
 
@@ -578,17 +619,27 @@ class MainWindow(QMainWindow):
         self.mark_in_time = self._current_time_seconds()
         self._set_mark_indicator(True)
         self._update_timeline_markers()
-        self.statusBar().showMessage(f"Marked in at {self.mark_in_time:.2f}s", 2000)
+        self.statusBar().showMessage(
+            self._t("status_marked_in", time=self.mark_in_time), 2000
+        )
 
     def _mark_out(self) -> None:
         if not self._require_media():
             return
         if self.mark_in_time is None:
-            QMessageBox.information(self, "No mark in", "Press I to set a start before marking out.")
+            QMessageBox.information(
+                self,
+                self._t("dialog_no_mark_in_title"),
+                self._t("dialog_no_mark_in_msg"),
+            )
             return
         end = self._current_time_seconds()
         if end <= self.mark_in_time:
-            QMessageBox.warning(self, "Invalid segment", "End must be after start.")
+            QMessageBox.warning(
+                self,
+                self._t("dialog_invalid_segment_title"),
+                self._t("dialog_invalid_segment_msg"),
+            )
             return
         label = f"E{len(self.project.segments) + 1}"
         segment = Segment(
@@ -604,7 +655,7 @@ class MainWindow(QMainWindow):
         self._set_mark_indicator(False)
         self._refresh_segments()
         self._update_timeline_markers()
-        self.statusBar().showMessage(f"Segment {label} saved", 2000)
+        self.statusBar().showMessage(self._t("status_segment_saved", label=label), 2000)
 
     def _selected_segment(self) -> Segment | None:
         if not self.project:
@@ -627,12 +678,14 @@ class MainWindow(QMainWindow):
     def _remove_video(self) -> None:
         media = self._selected_media()
         if not media or not self.project:
-            QMessageBox.information(self, "No video", "Select a video to remove.")
+            QMessageBox.information(
+                self, self._t("dialog_no_video_title"), self._t("dialog_no_video_remove_msg")
+            )
             return
         confirm = QMessageBox.question(
             self,
-            "Remove video",
-            "Remove this video from the project? All segments and notes tied to it will be deleted.",
+            self._t("dialog_remove_video_title"),
+            self._t("dialog_remove_video_msg"),
             QMessageBox.Yes | QMessageBox.No,
         )
         if confirm != QMessageBox.Yes:
@@ -654,7 +707,7 @@ class MainWindow(QMainWindow):
         self._refresh_video_list()
         self._refresh_segments()
         self._refresh_notes()
-        self.statusBar().showMessage("Video removed", 2000)
+        self.statusBar().showMessage(self._t("status_video_removed"), 2000)
 
     def _seek_to(self, seconds: float) -> None:
         duration_ms = self.player.duration()
@@ -679,23 +732,32 @@ class MainWindow(QMainWindow):
     def _edit_segment(self) -> None:
         segment = self._selected_segment()
         if not segment or not self.project:
-            QMessageBox.information(self, "No segment", "Select a segment to edit.")
+            QMessageBox.information(
+                self,
+                self._t("dialog_no_segment_title"),
+                self._t("dialog_no_segment_msg", action="edit"),
+            )
             return
         media = next((m for m in self.project.medias if m.id == segment.media_id), None)
         dlg = SegmentDialog(
             self,
-            "Edit segment",
+            self._t("dialog_edit_segment_title"),
             start=segment.start,
             end=segment.end,
             label=segment.label,
             speed=float(getattr(segment, "speed", 1.0) or 1.0),
             max_duration=media.duration if media else None,
+            gen_z_mode=self.gen_z_mode,
         )
         if dlg.exec() != QDialog.Accepted:
             return
         start, end, label, speed = dlg.values()
         if media and end > media.duration:
-            QMessageBox.warning(self, "Invalid segment", "End time exceeds media duration.")
+            QMessageBox.warning(
+                self,
+                self._t("dialog_invalid_segment_title"),
+                self._t("dialog_invalid_segment_duration_msg"),
+            )
             return
         segment.start = start
         segment.end = end
@@ -703,22 +765,30 @@ class MainWindow(QMainWindow):
         segment.speed = speed
         save_project(self.project)
         self._refresh_segments()
-        self.statusBar().showMessage("Segment updated", 2000)
+        self.statusBar().showMessage(self._t("status_segment_updated"), 2000)
 
     def _delete_segment(self) -> None:
         segment = self._selected_segment()
         if not segment or not self.project:
-            QMessageBox.information(self, "No segment", "Select a segment to delete.")
+            QMessageBox.information(
+                self,
+                self._t("dialog_no_segment_title"),
+                self._t("dialog_no_segment_msg", action="delete"),
+            )
             return
         self.project.segments = [s for s in self.project.segments if s.id != segment.id]
         save_project(self.project)
         self._refresh_segments()
-        self.statusBar().showMessage("Segment deleted", 2000)
+        self.statusBar().showMessage(self._t("status_segment_deleted"), 2000)
 
     def _duplicate_segment(self) -> None:
         segment = self._selected_segment()
         if not segment or not self.project:
-            QMessageBox.information(self, "No segment", "Select a segment to duplicate.")
+            QMessageBox.information(
+                self,
+                self._t("dialog_no_segment_title"),
+                self._t("dialog_no_segment_msg", action="duplicate"),
+            )
             return
         default_speed = float(getattr(segment, "speed", 1.0) or 1.0)
         base_label = segment.label or f"E{len(self.project.segments) + 1}"
@@ -728,12 +798,13 @@ class MainWindow(QMainWindow):
         media = next((m for m in self.project.medias if m.id == segment.media_id), None)
         dlg = SegmentDialog(
             self,
-            "Duplicate segment",
+            self._t("dialog_duplicate_segment_title"),
             start=segment.start,
             end=segment.end,
             label=suggested_label,
             speed=default_speed,
             max_duration=media.duration if media else None,
+            gen_z_mode=self.gen_z_mode,
         )
         if dlg.exec() != QDialog.Accepted:
             return
@@ -749,7 +820,7 @@ class MainWindow(QMainWindow):
         self.project.segments.append(duplicate)
         save_project(self.project)
         self._refresh_segments()
-        self.statusBar().showMessage("Segment duplicated", 2000)
+        self.statusBar().showMessage(self._t("status_segment_duplicated"), 2000)
 
     def _refresh_segments(self) -> None:
         self.segment_list.clear()
@@ -772,7 +843,12 @@ class MainWindow(QMainWindow):
             return
         if not self._require_media():
             return
-        text, ok = QInputDialog.getText(self, f"New {note_type}", "Note text:")
+        note_label = note_type_label(self.gen_z_mode, note_type)
+        text, ok = QInputDialog.getText(
+            self,
+            self._t("note_new_title", note_type=note_label),
+            self._t("note_text_prompt"),
+        )
         if not ok:
             return
         note = Note(
@@ -786,7 +862,10 @@ class MainWindow(QMainWindow):
         save_project(self.project)
         self._refresh_notes()
         self._update_timeline_markers()
-        self.statusBar().showMessage(f"{note_type.capitalize()} added", 1500)
+        status_key = (
+            "status_comment_added" if note_type == "comment" else "status_chapter_added"
+        )
+        self.statusBar().showMessage(self._t(status_key), 1500)
 
     def _selected_note(self) -> Note | None:
         if not self.project:
@@ -800,14 +879,19 @@ class MainWindow(QMainWindow):
     def _edit_note(self) -> None:
         note = self._selected_note()
         if not note or not self.project:
-            QMessageBox.information(self, "No note", "Select a note to edit.")
+            QMessageBox.information(
+                self,
+                self._t("dialog_no_note_title"),
+                self._t("dialog_no_note_msg", action="edit"),
+            )
             return
         dlg = NoteDialog(
             self,
-            "Edit note",
+            self._t("note_edit_title"),
             timestamp=note.timestamp,
             note_type=note.type,
             text=note.text,
+            gen_z_mode=self.gen_z_mode,
         )
         if dlg.exec() != QDialog.Accepted:
             return
@@ -818,18 +902,22 @@ class MainWindow(QMainWindow):
         save_project(self.project)
         self._refresh_notes()
         self._update_timeline_markers()
-        self.statusBar().showMessage("Note updated", 1500)
+        self.statusBar().showMessage(self._t("status_note_updated"), 1500)
 
     def _delete_note(self) -> None:
         note = self._selected_note()
         if not note or not self.project:
-            QMessageBox.information(self, "No note", "Select a note to delete.")
+            QMessageBox.information(
+                self,
+                self._t("dialog_no_note_title"),
+                self._t("dialog_no_note_msg", action="delete"),
+            )
             return
         self.project.notes = [n for n in self.project.notes if n.id != note.id]
         save_project(self.project)
         self._refresh_notes()
         self._update_timeline_markers()
-        self.statusBar().showMessage("Note deleted", 1500)
+        self.statusBar().showMessage(self._t("status_note_deleted"), 1500)
 
     # Score tracker -----------------------------------------------------------
     def _open_score_tracker(self) -> None:
@@ -838,7 +926,7 @@ class MainWindow(QMainWindow):
             self.score_tracker.raise_()
             self.score_tracker.activateWindow()
             return
-        self.score_tracker = ScoreTrackerWindow(self)
+        self.score_tracker = ScoreTrackerWindow(self, gen_z_mode=self.gen_z_mode)
         self.score_tracker.point_left.connect(self._on_point_left)
         self.score_tracker.point_right.connect(self._on_point_right)
         self.score_tracker.no_point.connect(self._on_no_point)
@@ -853,7 +941,7 @@ class MainWindow(QMainWindow):
         if not self.score_tracker:
             return ""
         left, right = self.score_tracker.scores()
-        return f" (L {left} - {right} R)"
+        return self._t("score_suffix", left=left, right=right)
 
     def _add_quick_comment(self, text: str) -> None:
         if not self._require_media():
@@ -869,7 +957,7 @@ class MainWindow(QMainWindow):
         save_project(self.project)
         self._refresh_notes()
         self._update_timeline_markers()
-        self.statusBar().showMessage("Comment added", 1500)
+        self.statusBar().showMessage(self._t("status_comment_added"), 1500)
 
     def _on_point_left(self) -> None:
         if not self._require_media():
@@ -879,7 +967,9 @@ class MainWindow(QMainWindow):
         if self.score_tracker and self.score_tracker.auto_score_enabled():
             self.score_tracker.increment_left()
         suffix = self._score_suffix() if self.score_tracker and self.score_tracker.auto_score_enabled() else ""
-        self._add_quick_comment(f"Point Left{suffix}")
+        self._add_quick_comment(
+            self._t("quick_point_left", step=self.score_step, suffix=suffix)
+        )
 
     def _on_point_right(self) -> None:
         if not self._require_media():
@@ -889,13 +979,15 @@ class MainWindow(QMainWindow):
         if self.score_tracker and self.score_tracker.auto_score_enabled():
             self.score_tracker.increment_right()
         suffix = self._score_suffix() if self.score_tracker and self.score_tracker.auto_score_enabled() else ""
-        self._add_quick_comment(f"Point Right{suffix}")
+        self._add_quick_comment(
+            self._t("quick_point_right", step=self.score_step, suffix=suffix)
+        )
 
     def _on_no_point(self) -> None:
         if not self._require_media():
             return
         suffix = self._score_suffix() if self.score_tracker else ""
-        self._add_quick_comment(f"No Point (Simul / Off target){suffix}")
+        self._add_quick_comment(self._t("quick_no_point", step=self.score_step, suffix=suffix))
 
     def _refresh_notes(self) -> None:
         self.notes_list.clear()
@@ -904,17 +996,22 @@ class MainWindow(QMainWindow):
         notes = sorted(self.project.notes, key=lambda n: n.timestamp)
         for note in notes:
             ts = to_timestamp(note.timestamp)
-            item = QListWidgetItem(f"{note.type:8} {ts}  {note.text}")
+            label = note_type_label(self.gen_z_mode, note.type)
+            item = QListWidgetItem(f"{label:8} {ts}  {note.text}")
             item.setData(Qt.UserRole, note.id)
             self.notes_list.addItem(item)
 
     # Export -------------------------------------------------------------------
     def _export(self) -> None:
         if not self.project:
-            QMessageBox.information(self, "No project", "Create or open a project first.")
+            QMessageBox.information(
+                self, self._t("dialog_no_project_title"), self._t("dialog_no_project_msg")
+            )
             return
         if not self.project.segments:
-            QMessageBox.information(self, "No segments", "Mark keep ranges before exporting.")
+            QMessageBox.information(
+                self, self._t("dialog_no_segments_title"), self._t("dialog_no_segments_msg")
+            )
             return
         slices = export_slices(
             self.project, include_gaps=self.export_gap_ff_enabled, gap_speed=self.export_gap_speed
@@ -923,16 +1020,23 @@ class MainWindow(QMainWindow):
         total_duration = timeline[-1][2] if timeline else 0.0
         _, warnings = chapter_lines_with_warnings(self.project, timeline, total_duration)
         if warnings:
-            warning_text = "Chapters do not meet YouTube requirements:\n\n"
-            warning_text += "\n".join(f"- {w}" for w in warnings)
-            warning_text += "\n\nContinue export anyway?"
+            mapped = self._map_warnings(warnings)
+            warning_text = f"{self._t('dialog_chapter_warnings_header')}\n\n"
+            warning_text += "\n".join(f"- {w}" for w in mapped)
+            warning_text += f"\n\n{self._t('dialog_chapter_warnings_continue')}"
             proceed = QMessageBox.question(
-                self, "Chapter warnings", warning_text, QMessageBox.Yes | QMessageBox.No
+                self, self._t("dialog_chapter_warnings_title"), warning_text, QMessageBox.Yes | QMessageBox.No
             )
             if proceed != QMessageBox.Yes:
                 return
         self._export_total_steps = len(slices) + 2
-        progress = QProgressDialog("Exporting...", "Cancel", 0, self._export_total_steps, self)
+        progress = QProgressDialog(
+            self._t("dialog_export_progress_label"),
+            self._t("dialog_export_progress_cancel"),
+            0,
+            self._export_total_steps,
+            self,
+        )
         progress.setWindowModality(Qt.ApplicationModal)
         progress.setMinimumDuration(0)
         progress.setValue(0)
@@ -1009,6 +1113,14 @@ class MainWindow(QMainWindow):
         return 1.0 / media.fps
 
     # Utility helpers --------------------------------------------------------
+    def _t(self, key: str, **kwargs) -> str:
+        return ui_text(self.gen_z_mode, key, **kwargs)
+
+    def _map_warnings(self, warnings: list[str]) -> list[str]:
+        if not self.gen_z_mode:
+            return warnings
+        return [WARNING_MAP.get(warning, warning) for warning in warnings]
+
     # Export fast-forward gaps -------------------------------------------------
     def _toggle_gap_fast_forward(self, checked: bool | None = None) -> None:
         if checked is None:
@@ -1018,9 +1130,9 @@ class MainWindow(QMainWindow):
         self.gap_speed_spin.setEnabled(self.export_gap_ff_enabled)
         self._sync_gap_ff_button_text()
         status = (
-            f"Gaps will be fast-forwarded at {self.export_gap_speed:g}x in export."
+            self._t("status_gap_ff_on", speed=f"{self.export_gap_speed:g}")
             if self.export_gap_ff_enabled
-            else "Gap fast-forward is off for export."
+            else self._t("status_gap_ff_off")
         )
         self.statusBar().showMessage(status, 2500)
 
@@ -1029,9 +1141,9 @@ class MainWindow(QMainWindow):
         self._sync_gap_ff_button_text()
 
     def _sync_gap_ff_button_text(self) -> None:
-        state = "ON" if self.export_gap_ff_enabled else "OFF"
+        state = self._t("gap_state_on") if self.export_gap_ff_enabled else self._t("gap_state_off")
         self.gap_ff_button.setText(
-            f"Fast-forward gaps (export): {state}  ({self.export_gap_speed:g}x)"
+            self._t("gap_ff_button_text", state=state, speed=f"{self.export_gap_speed:g}")
         )
 
     def _refresh_instructions(self) -> None:
@@ -1042,21 +1154,55 @@ class MainWindow(QMainWindow):
             return self.hotkeys.get(name, default)
 
         lines = [
-            "Quick guide:",
-            f"- New/Open project: {key('new_project', 'Ctrl+N')} / {key('open_project', 'Ctrl+O')}",
-            f"- Import videos: {key('import_videos', 'Ctrl+I')} (drag to reorder in the list)",
-            f"- Play/Pause: {key('play_pause', 'Space')} • Mute: {key('mute_audio', 'M')}",
-            "- Export fast-forward: button under the video to include gaps at a faster speed in highlights.",
-            f"- Scrub: {key('scrub_back', 'Left')} / {key('scrub_forward', 'Right')} "
-            f"({self.scrub_config.get('seconds_step', 1.0)}s)",
-            f"- Frame step: {key('scrub_frame_back', 'Shift+Left')} / {key('scrub_frame_forward', 'Shift+Right')} "
-            f"({self.scrub_config.get('frames_step', 1)} frame)",
-            f"- Mark In/Out: {key('mark_in', 'I')} / {key('mark_out', 'O')}",
-            f"- Add Comment/Chapter: {key('add_comment', 'Ctrl+Shift+C')} / {key('add_chapter', 'Ctrl+Shift+H')}",
-            f"- Score tracker: {key('score_tracker', 'Ctrl+Shift+S')} or toolbar button for quick point comments (+ optional auto score).",
-            "- Double-click a segment to jump to its start; use Edit/Delete buttons for segments and notes.",
-            f"- Open exports folder: {key('open_exports', 'Ctrl+Shift+E')}",
-            f"- Export: {key('export', 'Ctrl+E')}",
+            self._t("instructions_header"),
+            self._t(
+                "instructions_new_open",
+                new_key=key("new_project", "Ctrl+N"),
+                open_key=key("open_project", "Ctrl+O"),
+            ),
+            self._t(
+                "instructions_import",
+                import_key=key("import_videos", "Ctrl+I"),
+            ),
+            self._t(
+                "instructions_play_mute",
+                play_key=key("play_pause", "Space"),
+                mute_key=key("mute_audio", "M"),
+            ),
+            self._t("instructions_gap_ff"),
+            self._t(
+                "instructions_scrub",
+                back_key=key("scrub_back", "Left"),
+                fwd_key=key("scrub_forward", "Right"),
+                seconds_step=self.scrub_config.get("seconds_step", 1.0),
+            ),
+            self._t(
+                "instructions_frame_step",
+                back_key=key("scrub_frame_back", "Shift+Left"),
+                fwd_key=key("scrub_frame_forward", "Shift+Right"),
+                frames_step=self.scrub_config.get("frames_step", 1),
+            ),
+            self._t(
+                "instructions_mark",
+                in_key=key("mark_in", "I"),
+                out_key=key("mark_out", "O"),
+            ),
+            self._t(
+                "instructions_add_note",
+                comment_key=key("add_comment", "Ctrl+Shift+C"),
+                chapter_key=key("add_chapter", "Ctrl+Shift+H"),
+            ),
+            self._t(
+                "instructions_score_tracker",
+                score_key=key("score_tracker", "Ctrl+Shift+S"),
+            ),
+            self._t("instructions_double_click"),
+            self._t(
+                "instructions_open_exports",
+                open_exports_key=key("open_exports", "Ctrl+Shift+E"),
+            ),
+            self._t("instructions_open_config"),
+            self._t("instructions_export", export_key=key("export", "Ctrl+E")),
         ]
         return "\n".join(lines)
 
@@ -1077,29 +1223,34 @@ class MainWindow(QMainWindow):
         self._export_progress.setMaximum(self._export_total_steps)
         self._export_progress.setValue(done)
         if msg:
-            self._export_progress.setLabelText(f"Exporting... {msg}")
+            self._export_progress.setLabelText(f"{self._t('dialog_export_progress_label')} {msg}")
 
     def _on_export_finished(self, result: ExportResult) -> None:
         save_project(self.project)
         self._cleanup_export_worker()
-        message = (
-            f"Highlights: {result.highlights}\n"
-            f"Chapters: {result.youtube_chapters}\n"
-            f"Comments: {result.comments_timestamps}\n"
-            f"Clips: {len(result.clips)} saved"
-        )
+        lines = [
+            self._t("export_summary_highlights", path=result.highlights),
+            self._t("export_summary_chapters", path=result.youtube_chapters),
+            self._t("export_summary_comments", path=result.comments_timestamps),
+            self._t("export_summary_clips", count=len(result.clips)),
+        ]
         if self.export_gap_ff_enabled:
-            message += f"\nGaps fast-forwarded at {self.export_gap_speed:g}x."
+            lines.append(self._t("export_summary_gap", speed=f"{self.export_gap_speed:g}"))
         if result.chapter_warnings:
-            message += "\n\nChapter warnings:\n" + "\n".join(result.chapter_warnings)
-        QMessageBox.information(self, "Export complete", message)
+            mapped = self._map_warnings(result.chapter_warnings)
+            lines.append("")
+            lines.append(self._t("export_summary_warnings"))
+            lines.extend(mapped)
+        QMessageBox.information(self, self._t("dialog_export_complete_title"), "\n".join(lines))
 
     def _on_export_error(self, err: str) -> None:
         self._cleanup_export_worker()
         if "cancelled" in err.lower():
-            QMessageBox.information(self, "Export cancelled", "Export was cancelled.")
+            QMessageBox.information(
+                self, self._t("dialog_export_cancelled_title"), self._t("dialog_export_cancelled_msg")
+            )
         else:
-            QMessageBox.critical(self, "Export failed", err)
+            QMessageBox.critical(self, self._t("dialog_export_failed_title"), err)
 
     def _apply_hotkeys(self, action_map: dict[str, QAction]) -> None:
         for key, action in action_map.items():
@@ -1109,22 +1260,23 @@ class MainWindow(QMainWindow):
 
     def _apply_tooltips(self, action_map: dict[str, QAction]) -> None:
         descriptions = {
-            "new_project": "Create a new project",
-            "open_project": "Open an existing project",
-            "import_videos": "Import video files into the project",
-            "export": "Export highlights and text files",
-            "open_exports": "Open the project exports folder",
-            "play_pause": "Play or pause the current video",
-            "mute_audio": "Toggle audio mute",
-            "mark_in": "Set segment start (Mark In)",
-            "mark_out": "Set segment end (Mark Out)",
-            "add_comment": "Add a comment note at the playhead",
-            "add_chapter": "Add a chapter note at the playhead",
-            "score_tracker": "Open score tracker window for quick point comments",
-            "scrub_back": "Scrub backward by seconds",
-            "scrub_forward": "Scrub forward by seconds",
-            "scrub_frame_back": "Step backward by frames",
-            "scrub_frame_forward": "Step forward by frames",
+            "new_project": self._t("tooltip_new_project"),
+            "open_project": self._t("tooltip_open_project"),
+            "import_videos": self._t("tooltip_import_videos"),
+            "export": self._t("tooltip_export"),
+            "open_exports": self._t("tooltip_open_exports"),
+            "open_config": self._t("tooltip_open_config"),
+            "play_pause": self._t("tooltip_play_pause"),
+            "mute_audio": self._t("tooltip_mute_audio"),
+            "mark_in": self._t("tooltip_mark_in"),
+            "mark_out": self._t("tooltip_mark_out"),
+            "add_comment": self._t("tooltip_add_comment"),
+            "add_chapter": self._t("tooltip_add_chapter"),
+            "score_tracker": self._t("tooltip_score_tracker"),
+            "scrub_back": self._t("tooltip_scrub_back"),
+            "scrub_forward": self._t("tooltip_scrub_forward"),
+            "scrub_frame_back": self._t("tooltip_scrub_frame_back"),
+            "scrub_frame_forward": self._t("tooltip_scrub_frame_forward"),
         }
         for key, action in action_map.items():
             hint = descriptions.get(key, "")
@@ -1137,7 +1289,9 @@ class MainWindow(QMainWindow):
     def _sync_hotkey_labels(self) -> None:
         mark_in_key = self.hotkeys.get("mark_in", "I")
         mark_out_key = self.hotkeys.get("mark_out", "O")
-        self.segment_label.setText(f"Segments ({mark_in_key} = Mark In, {mark_out_key} = Mark Out)")
+        self.segment_label.setText(
+            self._t("label_segments", mark_in_key=mark_in_key, mark_out_key=mark_out_key)
+        )
         self._refresh_instructions()
 
     def _apply_timeline_config(self) -> None:
@@ -1146,14 +1300,15 @@ class MainWindow(QMainWindow):
         self.position_slider.set_config(self.colors, show_labels, label_max)
 
     def _sync_mute_action_text(self) -> None:
-        self.mute_action.setText("Mute Audio" if not self.audio.isMuted() else "Unmute Audio")
+        key = "action_mute_audio" if not self.audio.isMuted() else "action_unmute_audio"
+        self.mute_action.setText(self._t(key))
 
     def _set_mark_indicator(self, active: bool) -> None:
         if active:
-            self.mark_in_indicator.setText("Mark In: ON")
+            self.mark_in_indicator.setText(self._t("mark_indicator_on"))
             self.mark_in_indicator.setStyleSheet("color: white; background-color: #c0392b; padding: 4px;")
         else:
-            self.mark_in_indicator.setText("Mark In: OFF")
+            self.mark_in_indicator.setText(self._t("mark_indicator_off"))
             self.mark_in_indicator.setStyleSheet("color: #2c3e50; background-color: #ecf0f1; padding: 4px;")
 
     def _apply_window_icon(self) -> None:
@@ -1163,10 +1318,25 @@ class MainWindow(QMainWindow):
 
     def _open_exports_folder(self) -> None:
         if not self.project:
-            QMessageBox.information(self, "No project", "Create or open a project first.")
+            QMessageBox.information(
+                self, self._t("dialog_no_project_title"), self._t("dialog_no_project_msg")
+            )
             return
         self.project.exports_dir.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.project.exports_dir)))
+
+    def _open_config_file(self) -> None:
+        path = config_path()
+        if not path.exists():
+            load_config()
+        if not path.exists():
+            QMessageBox.information(
+                self,
+                self._t("dialog_open_config_failed_title"),
+                self._t("dialog_open_config_failed_msg", path=str(path)),
+            )
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def _update_timeline_markers(self) -> None:
         if not self.project or not self.current_media_id:
@@ -1180,12 +1350,12 @@ class MainWindow(QMainWindow):
         ]
         notes = [n for n in self.project.notes if n.media_id == self.current_media_id]
         chapters = [
-            NoteMarker(timestamp=n.timestamp, label=n.text or "Chapter")
+            NoteMarker(timestamp=n.timestamp, label=n.text or self._t("marker_chapter_default"))
             for n in sorted(notes, key=lambda n: n.timestamp)
             if n.type == "chapter"
         ]
         comments = [
-            NoteMarker(timestamp=n.timestamp, label=n.text or "Comment")
+            NoteMarker(timestamp=n.timestamp, label=n.text or self._t("marker_comment_default"))
             for n in sorted(notes, key=lambda n: n.timestamp)
             if n.type == "comment"
         ]

@@ -8,6 +8,7 @@ from typing import Any, Dict
 
 
 DEFAULT_CONFIG: Dict[str, Any] = {
+    "gen_z_mode": False,
     "colors": {
         "segment": "#e74c3c",
         "segment_active": "#f1c40f",
