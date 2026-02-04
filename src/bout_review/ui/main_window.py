@@ -2,7 +2,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QUrl, QObject, Signal, QThread
+from PySide6.QtCore import (
+    Qt,
+    QTimer,
+    QUrl,
+    QObject,
+    Signal,
+    QThread,
+    QEvent,
+    QPoint,
+    QFileSystemWatcher,
+)
 from PySide6.QtGui import QAction, QDesktopServices, QIcon
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
@@ -28,6 +38,8 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QDoubleSpinBox,
     QComboBox,
+    QScrollArea,
+    QToolButton,
     QWidget,
 )
 
@@ -46,6 +58,7 @@ from ..utils.timecode import to_timestamp
 from .timeline_slider import NoteMarker, SegmentMarker, TimelineSlider
 from .score_tracker import ScoreTrackerWindow
 from .strings import AURA_STEP, WARNING_MAP, note_type_label, ui_text
+from .theme import GENZ_THEME, gen_z_colors, gen_z_stylesheet
 
 
 class SegmentDialog(QDialog):
@@ -174,6 +187,51 @@ class NoteDialog(QDialog):
         )
 
 
+class ToolbarOverflowDialog(QDialog):
+    closed = Signal()
+
+    def __init__(self, parent: QWidget, actions: list[QAction], gen_z_mode: bool) -> None:
+        super().__init__(parent, Qt.Tool)
+        self.setModal(False)
+        self.setWindowTitle("Toolbar")
+
+        layout = QVBoxLayout(self)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(8, 8, 8, 8)
+        container_layout.setSpacing(6)
+
+        for action in actions:
+            btn = QToolButton(container)
+            btn.setDefaultAction(action)
+            btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+            btn.setAutoRaise(False)
+            if gen_z_mode:
+                btn.setStyleSheet(
+                    "background-color: #ff4fd8;"
+                    "color: #000000;"
+                    "border: 2px solid #000000;"
+                    "border-radius: 6px;"
+                    "padding: 6px 10px;"
+                )
+            container_layout.addWidget(btn)
+
+        container_layout.addStretch(1)
+        scroll.setWidget(container)
+        layout.addWidget(scroll)
+        self.resize(260, 360)
+        self.setMinimumSize(220, 220)
+        if gen_z_mode:
+            self.setStyleSheet(gen_z_stylesheet())
+
+    def closeEvent(self, event) -> None:
+        super().closeEvent(event)
+        self.closed.emit()
+
+
 class ExportWorker(QObject):
     progress = Signal(int, str)
     finished = Signal(ExportResult)
@@ -216,10 +274,17 @@ class MainWindow(QMainWindow):
         self.resize(1100, 720)
         self.hotkeys = self.config.get("hotkeys", {})
         self.colors = self.config.get("colors", {})
+        if self.gen_z_mode:
+            self.colors = dict(self.colors) | gen_z_colors()
         self.timeline_config = self.config.get("timeline", {})
         self.audio_config = self.config.get("audio", {})
         self.scrub_config = self.config.get("scrub", {})
         self.export_config = self.config.get("export", {})
+        self._config_path = config_path()
+        self._config_watcher = QFileSystemWatcher(self)
+        self._config_reload_timer = QTimer(self)
+        self._config_reload_timer.setSingleShot(True)
+        self._config_reload_timer.timeout.connect(self._reload_config)
 
         self.project: Project | None = None
         self.current_media_id: str | None = None
@@ -233,6 +298,15 @@ class MainWindow(QMainWindow):
         self._export_worker: ExportWorker | None = None
         self._export_progress: QProgressDialog | None = None
         self._export_total_steps: int = 0
+        self._toolbar_actions: list[QAction] = []
+        self._toolbar_ext_button: QToolButton | None = None
+        self._toolbar_overflow: ToolbarOverflowDialog | None = None
+        self._toolbar: QToolBar | None = None
+        self._action_map: dict[str, QAction] = {}
+        self._last_touch_side: str | None = None
+        self._touch_streak: int = 0
+        self.video_list_label: QLabel | None = None
+        self.gap_speed_label: QLabel | None = None
 
         self.player = QMediaPlayer(self)
         self.audio = QAudioOutput(self)
@@ -300,11 +374,15 @@ class MainWindow(QMainWindow):
         self.gap_speed_spin.setEnabled(self.export_gap_ff_enabled)
         self._sync_gap_ff_button_text()
         self._apply_window_icon()
+        if self.gen_z_mode:
+            self._apply_gen_z_theme()
+        self._init_config_watcher()
 
     # UI setup -----------------------------------------------------------------
     def _build_ui(self) -> None:
         left_layout = QVBoxLayout()
-        left_layout.addWidget(QLabel(self._t("label_videos")))
+        self.video_list_label = QLabel(self._t("label_videos"))
+        left_layout.addWidget(self.video_list_label)
         left_layout.addWidget(self.video_list)
         left_layout.addWidget(self.remove_video_button)
         left_layout.addWidget(self.import_button)
@@ -329,7 +407,8 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.position_label, 0)
         gap_ff_row = QHBoxLayout()
         gap_ff_row.addWidget(self.gap_ff_button)
-        gap_ff_row.addWidget(QLabel(self._t("label_gap_speed")))
+        self.gap_speed_label = QLabel(self._t("label_gap_speed"))
+        gap_ff_row.addWidget(self.gap_speed_label)
         gap_ff_row.addWidget(self.gap_speed_spin)
         gap_ff_row.addStretch()
         right_layout.addLayout(gap_ff_row, 0)
@@ -347,6 +426,7 @@ class MainWindow(QMainWindow):
     def _build_actions(self) -> None:
         toolbar = QToolBar("Main")
         self.addToolBar(toolbar)
+        self._toolbar = toolbar
 
         new_action = QAction(self._t("action_new_project"), self, triggered=self._new_project)
         open_action = QAction(self._t("action_open_project"), self, triggered=self._open_project)
@@ -402,6 +482,7 @@ class MainWindow(QMainWindow):
             "scrub_frame_back": scrub_frame_back_action,
             "scrub_frame_forward": scrub_frame_forward_action,
         }
+        self._action_map = action_map
         self._apply_hotkeys(action_map)
         self._apply_tooltips(action_map)
 
@@ -414,7 +495,7 @@ class MainWindow(QMainWindow):
             action.setShortcutContext(Qt.WindowShortcut)
             self.addAction(action)
 
-        for action in [
+        self._toolbar_actions = [
             new_action,
             open_action,
             import_action,
@@ -428,8 +509,10 @@ class MainWindow(QMainWindow):
             comment_action,
             chapter_action,
             score_action,
-        ]:
+        ]
+        for action in self._toolbar_actions:
             toolbar.addAction(action)
+        QTimer.singleShot(0, self._wire_toolbar_extension_button)
 
     def _connect_signals(self) -> None:
         self.video_list.itemSelectionChanged.connect(self._on_video_selected)
@@ -441,6 +524,144 @@ class MainWindow(QMainWindow):
         self.position_slider.sliderMoved.connect(self._on_slider_moved)
         self.position_slider.sliderPressed.connect(self._on_slider_pressed)
         self.position_slider.sliderReleased.connect(self._on_slider_released)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._wire_toolbar_extension_button()
+        if self._toolbar_overflow and self._toolbar_overflow.isVisible():
+            self._position_toolbar_overflow()
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        if obj is self._toolbar_ext_button:
+            if event.type() == QEvent.MouseButtonPress:
+                self._toggle_toolbar_overflow()
+                return True
+            if event.type() == QEvent.MouseButtonRelease:
+                return True
+        return super().eventFilter(obj, event)
+
+    def _wire_toolbar_extension_button(self) -> None:
+        if not self._toolbar:
+            return
+        ext_button = self._toolbar.findChild(QToolButton, "qt_toolbar_ext_button")
+        if not ext_button or ext_button is self._toolbar_ext_button:
+            return
+        self._toolbar_ext_button = ext_button
+        self._toolbar_ext_button.setCheckable(True)
+        self._toolbar_ext_button.installEventFilter(self)
+
+    def _ensure_toolbar_overflow(self) -> ToolbarOverflowDialog:
+        if not self._toolbar_overflow:
+            self._toolbar_overflow = ToolbarOverflowDialog(
+                self, self._toolbar_actions, self.gen_z_mode
+            )
+            self._toolbar_overflow.closed.connect(self._on_toolbar_overflow_closed)
+        return self._toolbar_overflow
+
+    def _toggle_toolbar_overflow(self) -> None:
+        panel = self._ensure_toolbar_overflow()
+        showing = not panel.isVisible()
+        if showing:
+            self._position_toolbar_overflow()
+            panel.show()
+            panel.raise_()
+            panel.activateWindow()
+        else:
+            panel.hide()
+        if self._toolbar_ext_button:
+            self._toolbar_ext_button.setChecked(showing)
+
+    def _position_toolbar_overflow(self) -> None:
+        if not self._toolbar_overflow:
+            return
+        anchor = self._toolbar_ext_button or self
+        size = self._toolbar_overflow.sizeHint()
+        anchor_pos = anchor.mapToGlobal(QPoint(0, anchor.height()))
+        x_offset = max(anchor.width() - size.width(), 0)
+        self._toolbar_overflow.move(QPoint(anchor_pos.x() + x_offset, anchor_pos.y()))
+
+    def _on_toolbar_overflow_closed(self) -> None:
+        if self._toolbar_ext_button:
+            self._toolbar_ext_button.setChecked(False)
+
+    def _init_config_watcher(self) -> None:
+        self._config_watcher.fileChanged.connect(self._on_config_path_changed)
+        self._config_watcher.directoryChanged.connect(self._on_config_dir_changed)
+        self._sync_config_watcher_paths()
+
+    def _sync_config_watcher_paths(self) -> None:
+        for path in self._config_watcher.files():
+            self._config_watcher.removePath(path)
+        for path in self._config_watcher.directories():
+            self._config_watcher.removePath(path)
+        if self._config_path.parent.exists():
+            self._config_watcher.addPath(str(self._config_path.parent))
+        if self._config_path.exists():
+            self._config_watcher.addPath(str(self._config_path))
+
+    def _ensure_config_file_watched(self) -> None:
+        if self._config_path.exists():
+            path_str = str(self._config_path)
+            if path_str not in self._config_watcher.files():
+                self._config_watcher.addPath(path_str)
+
+    def _on_config_path_changed(self, _path: str) -> None:
+        self._ensure_config_file_watched()
+        self._schedule_config_reload()
+
+    def _on_config_dir_changed(self, _path: str) -> None:
+        self._ensure_config_file_watched()
+        self._schedule_config_reload()
+
+    def _schedule_config_reload(self) -> None:
+        self._config_reload_timer.start(250)
+
+    def _reload_config(self) -> None:
+        new_path = config_path()
+        if new_path != self._config_path:
+            self._config_path = new_path
+            self._sync_config_watcher_paths()
+        prev_gen_z = self.gen_z_mode
+        self.config = load_config()
+        self.gen_z_mode = bool(self.config.get("gen_z_mode", False))
+        self.score_step = AURA_STEP if self.gen_z_mode else 1
+        self.hotkeys = self.config.get("hotkeys", {})
+        self.colors = self.config.get("colors", {})
+        if self.gen_z_mode:
+            self.colors = dict(self.colors) | gen_z_colors()
+        self.timeline_config = self.config.get("timeline", {})
+        self.audio_config = self.config.get("audio", {})
+        self.scrub_config = self.config.get("scrub", {})
+        self.export_config = self.config.get("export", {})
+
+        self.audio.setMuted(bool(self.audio_config.get("default_muted", True)))
+        self.audio.setVolume(float(self.audio_config.get("volume", 0.8)))
+
+        self.export_gap_ff_enabled = bool(self.export_config.get("fast_forward_gaps_enabled", False))
+        self.export_gap_speed = max(1.0, float(self.export_config.get("gap_speed", 3.0)))
+        self.gap_ff_button.setChecked(self.export_gap_ff_enabled)
+        self.gap_speed_spin.setValue(self.export_gap_speed)
+        self.gap_speed_spin.setEnabled(self.export_gap_ff_enabled)
+
+        self._apply_timeline_config()
+        if self.gen_z_mode:
+            self._apply_gen_z_theme()
+        else:
+            self._apply_default_theme()
+
+        self._apply_hotkeys(self._action_map)
+        self._apply_tooltips(self._action_map)
+        self._refresh_ui_texts()
+
+        if prev_gen_z != self.gen_z_mode:
+            self._last_touch_side = None
+            self._touch_streak = 0
+            if self.score_tracker:
+                self.score_tracker.close()
+                self.score_tracker = None
+            if self._toolbar_overflow:
+                self._toolbar_overflow.close()
+                self._toolbar_overflow = None
 
     # Project lifecycle --------------------------------------------------------
     def _new_project(self) -> None:
@@ -936,6 +1157,22 @@ class MainWindow(QMainWindow):
     def _reset_score_tracker(self) -> None:
         if self.score_tracker:
             self.score_tracker.reset_scores()
+        self._last_touch_side = None
+        self._touch_streak = 0
+
+    def _next_aura_gain(self, side: str) -> int:
+        base = int(self.score_step)
+        if not self.gen_z_mode:
+            return base
+        if self._last_touch_side == side:
+            self._touch_streak += 1
+        else:
+            self._last_touch_side = side
+            self._touch_streak = 1
+        multiplier = self.score_tracker.aura_multiplier() if self.score_tracker else 1
+        if self._touch_streak > 1:
+            return base * max(1, multiplier)
+        return base
 
     def _score_suffix(self) -> str:
         if not self.score_tracker:
@@ -964,11 +1201,12 @@ class MainWindow(QMainWindow):
             return
         if not self.score_tracker:
             self._open_score_tracker()
+        step = self._next_aura_gain("left")
         if self.score_tracker and self.score_tracker.auto_score_enabled():
-            self.score_tracker.increment_left()
+            self.score_tracker.increment_left(step)
         suffix = self._score_suffix() if self.score_tracker and self.score_tracker.auto_score_enabled() else ""
         self._add_quick_comment(
-            self._t("quick_point_left", step=self.score_step, suffix=suffix)
+            self._t("quick_point_left", step=step, suffix=suffix)
         )
 
     def _on_point_right(self) -> None:
@@ -976,16 +1214,20 @@ class MainWindow(QMainWindow):
             return
         if not self.score_tracker:
             self._open_score_tracker()
+        step = self._next_aura_gain("right")
         if self.score_tracker and self.score_tracker.auto_score_enabled():
-            self.score_tracker.increment_right()
+            self.score_tracker.increment_right(step)
         suffix = self._score_suffix() if self.score_tracker and self.score_tracker.auto_score_enabled() else ""
         self._add_quick_comment(
-            self._t("quick_point_right", step=self.score_step, suffix=suffix)
+            self._t("quick_point_right", step=step, suffix=suffix)
         )
 
     def _on_no_point(self) -> None:
         if not self._require_media():
             return
+        if self.gen_z_mode:
+            self._last_touch_side = None
+            self._touch_streak = 0
         suffix = self._score_suffix() if self.score_tracker else ""
         self._add_quick_comment(self._t("quick_no_point", step=self.score_step, suffix=suffix))
 
@@ -1254,9 +1496,8 @@ class MainWindow(QMainWindow):
 
     def _apply_hotkeys(self, action_map: dict[str, QAction]) -> None:
         for key, action in action_map.items():
-            shortcut = self.hotkeys.get(key)
-            if shortcut:
-                action.setShortcut(shortcut)
+            shortcut = self.hotkeys.get(key, "")
+            action.setShortcut(shortcut or "")
 
     def _apply_tooltips(self, action_map: dict[str, QAction]) -> None:
         descriptions = {
@@ -1294,6 +1535,30 @@ class MainWindow(QMainWindow):
         )
         self._refresh_instructions()
 
+    def _refresh_ui_texts(self) -> None:
+        self.setWindowTitle(self._t("window_title"))
+        if self.video_list_label:
+            self.video_list_label.setText(self._t("label_videos"))
+        self.remove_video_button.setText(self._t("button_remove_video"))
+        self.import_button.setText(self._t("button_import_videos"))
+        self.segment_edit_button.setText(self._t("button_edit_segment"))
+        self.segment_delete_button.setText(self._t("button_delete_segment"))
+        self.segment_duplicate_button.setText(self._t("button_duplicate_segment"))
+        self.note_label.setText(self._t("label_notes"))
+        self.note_edit_button.setText(self._t("button_edit_note"))
+        self.note_delete_button.setText(self._t("button_delete_note"))
+        if self.gap_speed_label:
+            self.gap_speed_label.setText(self._t("label_gap_speed"))
+
+        for key, action in self._action_map.items():
+            if key == "mute_audio":
+                continue
+            action.setText(self._t(f"action_{key}"))
+        self._sync_mute_action_text()
+        self._sync_hotkey_labels()
+        self._sync_gap_ff_button_text()
+        self._set_mark_indicator(self.mark_in_time is not None)
+
     def _apply_timeline_config(self) -> None:
         show_labels = bool(self.timeline_config.get("show_labels", True))
         label_max = int(self.timeline_config.get("label_max_chars", 12))
@@ -1306,15 +1571,39 @@ class MainWindow(QMainWindow):
     def _set_mark_indicator(self, active: bool) -> None:
         if active:
             self.mark_in_indicator.setText(self._t("mark_indicator_on"))
-            self.mark_in_indicator.setStyleSheet("color: white; background-color: #c0392b; padding: 4px;")
         else:
             self.mark_in_indicator.setText(self._t("mark_indicator_off"))
+        if self.gen_z_mode:
+            bg = GENZ_THEME["pink"] if active else GENZ_THEME["green"]
+            self.mark_in_indicator.setStyleSheet(
+                f"color: #000000; background-color: {bg}; padding: 4px; border: 2px solid #000000;"
+            )
+            return
+        if active:
+            self.mark_in_indicator.setStyleSheet("color: white; background-color: #c0392b; padding: 4px;")
+        else:
             self.mark_in_indicator.setStyleSheet("color: #2c3e50; background-color: #ecf0f1; padding: 4px;")
 
     def _apply_window_icon(self) -> None:
         icon_path = Path(__file__).resolve().parents[1] / "assets" / "bout_review_icon.png"
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
+
+    def _apply_gen_z_theme(self) -> None:
+        self.setStyleSheet(gen_z_stylesheet())
+        self.instructions_label.setStyleSheet(
+            f"padding: 8px; background-color: {GENZ_THEME['green']}; color: #000000;"
+            f" border: 2px solid {GENZ_THEME['border']};"
+        )
+        self.position_label.setStyleSheet(
+            f"padding: 4px 8px; background-color: {GENZ_THEME['pink']}; color: #000000;"
+            f" border: 2px solid {GENZ_THEME['border']};"
+        )
+
+    def _apply_default_theme(self) -> None:
+        self.setStyleSheet("")
+        self.instructions_label.setStyleSheet("padding: 8px;")
+        self.position_label.setStyleSheet("")
 
     def _open_exports_folder(self) -> None:
         if not self.project:

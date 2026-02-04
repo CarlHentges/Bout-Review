@@ -11,6 +11,7 @@ DEFAULT_STRINGS: Dict[str, str] = {
     "score_right_label": "Right",
     "score_label": "Score",
     "score_enable": "Enable Score",
+    "score_multiplier_label": "Multiplier",
     "score_point_left": "Point Left",
     "score_point_right": "Point Right",
     "score_no_point": "No Point (Simul / Off target)",
@@ -170,6 +171,7 @@ GENZ_STRINGS: Dict[str, str] = {
     "score_right_label": "Right",
     "score_label": "Aura",
     "score_enable": "Auto aura",
+    "score_multiplier_label": "Aura multiplier",
     "score_point_left": "Left aura +{step}",
     "score_point_right": "Right aura +{step}",
     "score_no_point": "No aura (simul / off-target)",
@@ -325,24 +327,65 @@ GENZ_STRINGS: Dict[str, str] = {
 NOTE_TYPE_LABELS = {"comment": "vibe", "chapter": "chapter"}
 
 WARNING_MAP = {
-    "YouTube requires at least 3 chapter timestamps.": "YouTube wants at least 3 chapter stamps.",
-    "Some chapters are less than 10 seconds apart.": "Some chapters are under 10s apart.",
-    "Last chapter is within 10 seconds of the end.": "Last chapter is within 10s of the end.",
+    "YouTube requires at least 3 chapter timestamps.": "YouTube wants at least 3 chapter stamps. ⚠️",
+    "Some chapters are less than 10 seconds apart.": "Some chapters are under 10s apart. ⚠️",
+    "Last chapter is within 10 seconds of the end.": "Last chapter is within 10s of the end. ⚠️",
 }
+
+GENZ_EMOJI_DEFAULT = "✨"
+GENZ_EMOJI_BY_PREFIX = (
+    ("score_", "⚡"),
+    ("quick_", "⚡"),
+    ("gap_", "⏩"),
+    ("export_summary_", "📦"),
+    ("instructions_", "👉"),
+    ("tooltip_", "💡"),
+    ("dialog_", "💬"),
+    ("status_", "✅"),
+    ("button_", "🔘"),
+    ("action_", "🎬"),
+    ("label_", "🏷️"),
+    ("mark_indicator_", "🎯"),
+    ("segment_", "✂️"),
+    ("note_", "📝"),
+    ("marker_", "🏷️"),
+)
+GENZ_EMOJI_SET = {GENZ_EMOJI_DEFAULT, *{emoji for _, emoji in GENZ_EMOJI_BY_PREFIX}}
+
+
+def _genz_emoji_for_key(key: str) -> str:
+    for prefix, emoji in GENZ_EMOJI_BY_PREFIX:
+        if key.startswith(prefix):
+            return emoji
+    return GENZ_EMOJI_DEFAULT
+
+
+def _contains_genz_emoji(text: str) -> bool:
+    return any(emoji in text for emoji in GENZ_EMOJI_SET)
+
+
+def _maybe_add_genz_emoji(key: str, text: str) -> str:
+    if not text or not text.strip():
+        return text
+    if _contains_genz_emoji(text):
+        return text
+    return f"{text} {_genz_emoji_for_key(key)}"
 
 
 def ui_text(gen_z: bool, key: str, **kwargs) -> str:
     source = GENZ_STRINGS if gen_z else DEFAULT_STRINGS
     text = source.get(key) or DEFAULT_STRINGS.get(key, key)
     if not kwargs:
-        return text
+        return _maybe_add_genz_emoji(key, text) if gen_z else text
     try:
-        return text.format(**kwargs)
+        formatted = text.format(**kwargs)
     except (KeyError, ValueError):
-        return text
+        formatted = text
+    return _maybe_add_genz_emoji(key, formatted) if gen_z else formatted
 
 
 def note_type_label(gen_z: bool, note_type: str) -> str:
     if not gen_z:
         return note_type
-    return NOTE_TYPE_LABELS.get(note_type, note_type)
+    label = NOTE_TYPE_LABELS.get(note_type, note_type)
+    return _maybe_add_genz_emoji(f"note_type_{note_type}", label)
